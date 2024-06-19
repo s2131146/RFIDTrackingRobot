@@ -9,9 +9,13 @@
 #include "Command.hpp"
 
 /**
+ * @brief RFID Tracking Robot
+ */
+namespace RFIDTR {
+/**
  * @brief シリアル通信用ポート番号
  */
-const int SERIAL_PORT = 9600;
+const int SERIAL_PORT = 19200;
 
 /**
  * @brief モーター最大出力
@@ -21,15 +25,18 @@ const int MOTOR_MAX_POWER = 400;
 SONAR sonar11(0x11), sonar12(0x12), sonar13(0x13);
 
 irqISR(irq1, isr1);
-MotorWheel wheel1(9, 8, 6, 7,
+/// @brief 中央モーター
+MotorWheel wheel2(9, 8, 6, 7,
                   &irq1);  // Pin9:PWM, Pin8:DIR, Pin6:PhaseA, Pin7:PhaseB
 
 irqISR(irq2, isr2);
-MotorWheel wheel2(10, 11, 14, 15,
+/// @brief 左モーター
+MotorWheel wheel3(10, 11, 14, 15,
                   &irq2);  // Pin10:PWM, Pin11:DIR, Pin14:PhaseA, Pin15:PhaseB
 
 irqISR(irq3, isr3);
-MotorWheel wheel3(3, 2, 4, 5,
+/// @brief 右モーター
+MotorWheel wheel1(3, 2, 4, 5,
                   &irq3);  // Pin3:PWM, Pin2:DIR, Pin4:PhaseA, Pin5:PhaseB
 
 /**
@@ -53,11 +60,46 @@ void setWheelSpeed(int left, int right) {
     Omni.wheelRightSetSpeedMMPS(left);
 }
 
-void move(int left, int right) {
-    int lp = MOTOR_MAX_POWER * (left / 100);
-    int rp = MOTOR_MAX_POWER * (right / 100);
+int speedL = 0, speedR = 0;
 
-    Omni.wheelRightSetSpeedMMPS(500);
+/**
+ * @brief 移動
+ * 
+ * @param left 左モーター出力% (-1で変更なし)
+ * @param right 右モーター出力% (-1で変更なし)
+ */
+void setSpeed(int left=-1, int right=-1) {
+    int lp = floorf(MOTOR_MAX_POWER * (left / 100.0));
+    int rp = floorf(MOTOR_MAX_POWER * (right / 100.0));
+
+    if (left == 0 && right == 0) {
+        if (speedL != 0 || speedR != 0) {
+            Serial.println("Stopped");
+            Omni.wheelLeftSetSpeedMMPS(lp);
+            Omni.wheelRightSetSpeedMMPS(rp, DIR_BACKOFF);
+            speedL = 0;
+            speedR = 0;
+        }
+    } else {
+        if (left != -1) {
+            Serial.println("Left Speed: " + String(speedL));
+            if (lp != speedL) {
+                Serial.println("Set left speed: " + String(lp));
+                Omni.wheelLeftSetSpeedMMPS(lp);
+                speedL = lp;
+            } 
+        }
+        if (right != -1) {
+            Serial.println("Right Speed: " + String(speedR));
+            if (rp != speedR) {
+                Serial.println("Set right speed: " + String(rp));
+                Omni.wheelRightSetSpeedMMPS(rp, DIR_BACKOFF);
+                speedR = rp;
+            }
+        }        
+    }
+
+
     Omni.PIDRegulate();
 }
 
@@ -71,16 +113,6 @@ void initSonar() {
     SONAR::init(13);
 
     Omni.PIDEnable(0.26, 0.02, 0, 10);
-}
-
-/**
- * @brief Setup function of Arduino
- */
-void setup() {
-    Serial.begin(SERIAL_PORT);
-    pinMode(LED_BUILTIN, OUTPUT);
-    initSonar();
-    move(50, 100);
 }
 
 /**
@@ -119,11 +151,25 @@ void execute(String cmdStr) {
     double value = cmd.getValue();
 
     if (command == "L") {
-        digitalWrite(LED_BUILTIN, LOW);
+        setSpeed((int)value, -1);
     }
     if (command == "R") {
-        digitalWrite(LED_BUILTIN, HIGH);
+        setSpeed(-1, (int)value);
     }
+    if (command == "STOP") {
+        setSpeed(0, 0);
+    }
+}
+} // namespace RFIDTR
+
+/**
+ * @brief Setup function of Arduino
+ */
+void setup() {
+    Serial.begin(RFIDTR::SERIAL_PORT);
+    pinMode(LED_BUILTIN, OUTPUT);
+    RFIDTR::initSonar();
+    Serial.println("Setup completed");
 }
 
 /**
@@ -131,7 +177,7 @@ void execute(String cmdStr) {
  */
 void loop() {
     if (Serial.available()) {
-        String data = getSerialStr();
-        execute(data);
+        String data = RFIDTR::getSerialStr();
+        RFIDTR::execute(data);
     }
 }
