@@ -1,74 +1,208 @@
+from tkinter import font
 import cv2
-import numpy as np
+import tqueue
 import tkinter as tk
 from tkinter import ttk
-from tkinter import messagebox
+from tkinter import scrolledtext as st
 from PIL import Image, ImageTk
 
+DEF_MARGIN = 12
+STICKY_UP = "n"
+STICKY_DOWN = "s"
+STICKY_RIGHT = "e"
+STICKY_LEFT = "w"
+STICKY_CENTER = "nsew"
+
+
 class App:
-    def __init__(self, root):
+    queue = tqueue.TQueue()
+    timeline_index = 0
+
+    def __init__(self, _tracker, root):
+        self.tracker = _tracker
         self.root = root
-        self.root.title("OpenCV and Tkinter")
+        self.root.title("Metoki - RFID Tracking Robot")
+        self.root.bind("<KeyPress>", self.key_pressed)
+        self.root.bind("<Button-1>", self.on_click)
 
-        # Video frame
         self.video_frame = tk.Label(root)
-        self.video_frame.grid(row=0, column=0, padx=10, pady=10)
+        self.video_frame.grid(row=0, column=0, padx=(DEF_MARGIN, 0), pady=DEF_MARGIN)
 
-        # Right frame for controls
         self.control_frame = tk.Frame(root)
-        self.control_frame.grid(row=0, column=1, padx=10, pady=10, sticky="n")
+        self.control_frame.grid(row=0, column=1, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_UP)
 
-        # Text box
-        self.text_box = tk.Text(self.control_frame, height=10, width=30)
-        self.text_box.grid(row=0, column=0, padx=5, pady=5)
+        self.command_frame = tk.Frame(self.control_frame)
+        self.command_frame.grid(row=0, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_UP)
 
-        # Button
-        self.button = ttk.Button(self.control_frame, text="Print Text", command=self.print_text)
-        self.button.grid(row=1, column=0, padx=5, pady=5)
+        self.command_label = tk.Label(self.command_frame, text="Command: ")
+        self.command_label.grid(row=0, column=0, padx=0, pady=5, sticky=STICKY_LEFT)
 
-        # Update Button
-        self.update_button = ttk.Button(self.control_frame, text="Update Text", command=self.update_text)
-        self.update_button.grid(row=2, column=0, padx=5, pady=5)
+        self.command_entry = tk.Entry(self.command_frame, width=25)
+        self.command_entry.grid(row=0, column=1, padx=0, pady=5)
+        self.command_entry.bind("<Return>", self.comamnd_enter_pressed)
+        self.command_entry.focus_set()
 
-        # Status label
-        self.status_label = tk.Label(self.control_frame, text="Status: Ready", anchor="w", justify="left")
-        self.status_label.grid(row=3, column=0, padx=5, pady=5)
+        self.send_button = ttk.Button(self.command_frame, text="Send", command=self.send_command)
+        self.send_button.grid(row=0, column=2, padx=5, pady=5)
 
-        # Capture video from webcam
-        self.cap = cv2.VideoCapture(0)
-        self.update_frame()
+        self.received_text = st.ScrolledText(self.control_frame, wrap=tk.WORD, width=40, height=10)
+        self.received_text.grid(row=1, column=0, padx=0, pady=(5, 0))
 
-    def print_text(self):
-        text = self.text_box.get("1.0", tk.END).strip()
-        messagebox.showinfo("Text", text)
-        self.update_status("Printed text.")
+        self.var_auto_scroll_received = tk.IntVar(value=1)
+        self.auto_scroll_received_checkbox = tk.Checkbutton(self.control_frame, text="AutoScroll", variable=self.var_auto_scroll_received)
+        self.auto_scroll_received_checkbox.grid(row=2, column=0, padx=DEF_MARGIN, pady=0, sticky=STICKY_LEFT)
 
-    def update_text(self):
-        # ここで必要な処理をして、テキストを更新する
-        self.text_box.delete("1.0", tk.END)
-        self.text_box.insert(tk.END, "Updated text goes here.")
-        self.update_status("Text has been updated.")
+        custom_font = font.Font(family="Consolas", size=10)
+        self.label_received = tk.Label(self.control_frame, text="Initialized.", anchor="w", justify="left", font=custom_font)
+        self.label_received.grid(row=3, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT)
+
+        self.sent_text = st.ScrolledText(self.control_frame, wrap=tk.WORD, width=40, height=10)
+        self.sent_text.grid(row=4, column=0, padx=0, pady=(5, 0))
+
+        self.var_auto_scroll_sent = tk.IntVar(value=1)
+        self.auto_scroll_sent_checkbox = tk.Checkbutton(self.control_frame, text="AutoScroll", variable=self.var_auto_scroll_sent)
+        self.auto_scroll_sent_checkbox.grid(row=5, column=0, padx=DEF_MARGIN, pady=0, sticky=STICKY_LEFT)
+
+        self.label_sent = tk.Label(self.control_frame, text="", anchor="w", justify="left", font=custom_font)
+        self.label_sent.grid(row=6, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT)
+
+        self.status_frame = tk.Frame(self.control_frame)
+        self.status_frame.grid(row=10, column=0, padx=DEF_MARGIN, pady=0, sticky=STICKY_CENTER)
+        self.status_frame.grid_columnconfigure(0, weight=1)
+        self.status_frame.grid_columnconfigure(1, weight=1)
+
+        self.label_status = tk.Label(self.status_frame, text="Ready", font=custom_font, anchor="w", justify="left")
+        self.label_status.grid(row=0, column=0, padx=0, pady=0, sticky=STICKY_LEFT)
+
+        custom_font = font.Font(family="Consolas", size=12)
+        self.label_seg = tk.Label(self.status_frame, text="0", font=custom_font)
+        self.label_seg.grid(row=0, column=1, padx=0, pady=0, sticky=STICKY_RIGHT)
+
+        self.update_stop()
+
+    def on_click(self, e):
+        if isinstance(e.widget, tk.Entry):
+            return
+        
+        self.root.focus_set()
+
+    def key_pressed(self, e):
+        focus = self.root.focus_get()
+        if focus is not None and focus != self.root:
+            return
+        
+        if e.keysym == "x":
+            self.command_stop_start()
+
+        if e.keysym == "q":
+            self.__del__()
+
+    def comamnd_enter_pressed(self, e):
+        self.send_command()
+
+    def send_command(self):
+        command = self.command_entry.get()
+        res = self.tracker.send(command)
+
+        if res:
+            self.update_status("Sent: " + command.upper())
+        else:
+            self.update_status("Invalid Command: " + command.upper())
+
+        self.command_entry.delete(0, tk.END)
+
+    def update_stop(self, connected=True):
+        if self.tracker.stop:
+            self.update_status("Motor stopped.")
+            custom_font = font.Font(family="Verdana Bold", size=18, weight="bold")
+            self.stop_button = tk.Button(
+                self.control_frame,
+                text="START",
+                font=custom_font,
+                borderwidth=2,
+                bg="white",
+                fg="green" if connected else "gray",
+                activebackground="white",
+                activeforeground="green" if connected else "gray",
+                relief="solid",
+                command=self.command_stop_start,
+            )
+            self.stop_button.grid(row=9, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_CENTER)
+            self.stop_button.config(padx=20, pady=5)
+
+            if not connected:
+                self.root.configure(bg="red")
+            else:
+                self.root.configure(bg="SystemButtonFace")
+        else:
+            self.update_status("Motor started.")
+            custom_font = font.Font(family="Verdana Bold", size=18, weight="bold")
+            self.stop_button = tk.Button(
+                self.control_frame,
+                text="STOP",
+                font=custom_font,
+                borderwidth=2,
+                bg="yellow",
+                fg="red",
+                activebackground="yellow",
+                activeforeground="red",
+                relief="solid",
+                command=self.command_stop_start,
+            )
+            self.stop_button.grid(row=9, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_CENTER)
+            self.stop_button.config(padx=20, pady=5)
+
+    def command_stop_start(self):
+        if self.tracker.stop:
+            self.tracker.start_motor()
+        else:
+            self.tracker.stop_motor()
 
     def update_status(self, status):
-        # 現在のステータステキストを取得し、新しいステータスと結合して更新
-        current_status = self.status_label.cget("text")
-        new_status = f"{status}" if current_status else status
-        self.status_label.config(text=new_status)
+        self.label_status.config(text=status)
 
-    def update_frame(self):
-        ret, frame = self.cap.read()
-        if ret:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame)
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.video_frame.imgtk = imgtk
-            self.video_frame.config(image=imgtk)
-        self.root.after(10, self.update_frame)
+    def update_seg(self, seg):
+        self.label_seg.config(text=seg)
+
+    def update_frame(self, frame):
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame)
+        if not hasattr(self, "imgtk"):
+            self.imgtk = ImageTk.PhotoImage(image=img)
+            self.video_frame.config(image=self.imgtk)
+        else:
+            self.imgtk.paste(img)
+        
+        self.update_sent_command()
+        self.update_received_command()
 
     def __del__(self):
-        self.cap.release()
+        self.tracker.close()
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = App(root)
-    root.mainloop()
+    def update_received_command(self):
+        if self.queue.has("r"):
+            cmd = self.queue.get("r")
+            if not self.received_text.get("1.0", tk.END).strip():
+                self.received_text.insert(tk.END, "{}: {}".format(self.timeline_index, cmd))
+            else:
+                self.received_text.insert(tk.END, "\n{}: {}".format(self.timeline_index, cmd))
+            
+            self.label_received.config(text=cmd)
+            self.timeline_index += 1
+
+            if self.var_auto_scroll_received.get():
+                self.received_text.see(tk.END)
+
+    def update_sent_command(self):
+        if self.queue.has("s"):
+            cmd = self.queue.get("s")
+            if not self.sent_text.get("1.0", tk.END).strip():
+                self.sent_text.insert(tk.END, "{}: {}".format(self.timeline_index, cmd))
+            else:
+                self.sent_text.insert(tk.END, "\n{}: {}".format(self.timeline_index, cmd))
+            
+            self.label_sent.config(text=cmd)
+            self.timeline_index += 1
+
+            if self.var_auto_scroll_sent.get():
+                self.sent_text.see(tk.END)

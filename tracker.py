@@ -1,4 +1,5 @@
 import os
+import threading
 
 # カメラ起動高速化
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -6,16 +7,11 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2
 import time
 import math
-import serial
-import gui
 import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
-from PIL import Image, ImageTk
 
-# 起動時間計測
-print("[System] Starting up...")
-time_startup = time.time()
+from constants import Commands
+import tracker_socket as ts
+import gui
 
 # シリアルポートの設定
 SERIAL_PORT = "COM3"
@@ -26,360 +22,388 @@ SERIAL_SEND_INTERVAL = 0.3
 FRAME_WIDTH = 512
 FRAME_HEIGHT = 512
 
-com: serial.Serial = None
-com_connected = False
-
-# 送信したコマンド
-serial_sent = ""
+DEBUG_SERIAL = False
 
 
-def connect_socket():
-    """シリアル通信を開始
+class Tracker:
+    root = app = cascade = video_capture = None
+    frame_width = frame_height = d_x = d_y = face_x = face_center_x = None
+    max_motor_power_threshold = motor_power_l = motor_power_r = None
+    interval_serial_send_start_time = seg = serial_sent = None
 
-    Returns:
-        bool: 接続結果
-    """
-    global com_connected, com
-    print("[Serial] Connecting to port")
-    com = serial.Serial()
-    com.port = SERIAL_PORT
-    com.baudrate = SERIAL_BAUD
-    com.timeout = None
-    com.dtr = False
-
-    try:
-        com.open()
-        com_connected = True
-        print("[Serial] Serial port connected")
-    except serial.SerialException:
-        print("[Serial] Serial port is not open")
-    finally:
-        return com_connected
-
-
-def elapsed_str(start_time):
-    """経過時間の文字列を取得
-
-    Args:
-        start_time (float): 計測開始時刻
-
-    Returns:
-        str: 経過時間の文字列
-    """
-    return "{}ms".format(math.floor((time.time() - start_time) * 1000))
-
-
-def print_d(frame, text):
-    """デバッグ用画面出力
-
-    Args:
-        frame (MatLike): フレーム
-        text (str): 出力文字列
-    """
-    text_lines = text.split("\n")
-    for index, line in enumerate(text_lines, start=1):
-        cv2.putText(
-            frame, line, (5, 15 * index), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0)
-        )
-
-
-def print_key_binds(frame):
-    """キーバインドを出力
-
-    Args:
-        frame (MatLike): フレーム
-    """
-    text = "PRESS X TO STOP.\nPRESS Q TO EXIT.\n{}".format(seg)
-    text_lines = text.split("\n")
-    text_lines.reverse()
-    for index, line in enumerate(text_lines, start=1):
-        text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-        text_x = math.floor(frame_width - text_size[0] - 15)
-        text_y = math.floor(frame_height - (15 * index)) + 5
-        cv2.putText(
-            frame, line, (text_x, text_y), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0)
-        )
-
-
-def print_serial_stat(frame):
-    """シリアル通信状況の出力
-
-    Args:
-        frame (MatLike): フレーム
-    """
-    text = "SERIAL SENT."
-    text_y = math.floor(frame_height - 10)
-    cv2.putText(frame, text, (5, text_y), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0))
-
-
-def send_serial(data, frame=None):
-    """シリアル通信でコマンドを送信
-
-    Args:
-        data (str|tuple): 送信データ (コマンド|(コマンド, 値))
-        frame (MatLike, optional): フレーム. Defaults to None.
-    """
-    global com_connected, serial_sent
-    if not com_connected:
-        if not connect_socket():
-            return
-
-    if isinstance(data, tuple):
-        data = "{}:{}".format(data[0], data[1])
-    elif not isinstance(data, str):
-        print("[Serial] data is unsupported type")
-        return
-
-    serial_sent = data
-    data += "\n"
-
-    try:
-        com.write(data.encode())
-        if frame is not None:
-            print_serial_stat(frame)
-    except serial.SerialException:
-        com_connected = False
-        print("[Serial] Serial port is closed")
-
-
-def print_serial(received):
-    """Arduinoからのシリアル通信の内容を出力"""
-    try:
-        if com.in_waiting > 0:
-            res = com.readline().decode("utf-8", "ignore").strip()
-            print("[Serial] Received: {} [{}]".format(res, seg))
-            return res
-        else:
-            return received
-    except serial.SerialException:
-        print("[Serial] Serial port is closed")
-
-
-def calculate_fps(fps_count, total_fps, avr_fps):
-    """FPSを計算
-
-    Args:
-        fps_count (int): 平均FPSを算出するための呼び出し回数カウント
-        total_fps (int): カウント中の合計FPS
-        avr_fps (int): 平均FPS
-
-    Returns:
-        fps_count, total_fps, avr_fps
-    """
-    if fps_count >= 10:
-        fps_count = 0
-        avr_fps = total_fps / 10
-        total_fps = 0
-    return fps_count, total_fps, avr_fps
-
-
-def detect_target(frame):
-    """画像から対象を検出
-
-    Args:
-        frame (MatLike): フレーム
-
-    Returns:
-        Sequence[Rect]: 座標情報
-    """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    target = face_cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(30, 30),
-        flags=cv2.CASCADE_SCALE_IMAGE,
+    serial = ts.TrackerSocket(
+        SERIAL_PORT, SERIAL_BAUD, SERIAL_SEND_INTERVAL, DEBUG_SERIAL
     )
-    return target
 
-
-def calculate_motor_power(target_x):
-    """モーター出力を計算
-
-    Args:
-        target_x (int): 対象座標X
-    """
-    global motor_power_l, motor_power_r
-    if target_x < 0:
-        motor_power_l = math.floor(math.sqrt(-target_x))
-        motor_power_r = math.floor(math.sqrt(-(target_x * 4)))
-        motor_power_l -= motor_power_r
-    else:
-        motor_power_l = math.floor(math.sqrt(target_x * 4))
-        motor_power_r = math.floor(math.sqrt(target_x))
-        motor_power_r -= motor_power_l
-
-    motor_power_l += 70
-    motor_power_r += 70
-
-    if motor_power_l > 100:
-        motor_power_l = 100
-    if motor_power_r > 100:
-        motor_power_r = 100
-
-
-def get_target_pos_str(target_center_x):
-    if target_center_x < frame_width // 3:
-        target_position_str = "L"
-    elif target_center_x < 2 * frame_width // 3:
-        target_position_str = "C"
-    else:
-        target_position_str = "R"
-
-    return target_position_str
-
-
-def process_target(frame, target):
-    """画像中の対象を囲む
-
-    Args:
-        frame (MatLike): フレーム
-        target (Sequence[Rect]): 座標情報
-
-    Returns:
-        target_center_x, target_x: 顔座標原点X, 顔座標X
-    """
-    global d_x, d_y, target_detected
-    for x, y, w, h in target:
-        d_x = x
-        d_y = y
-        target_detected = True
-
-        target_center_x = x + w // 2
-        target_x = math.floor(target_center_x - frame_width / 2)
-
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-        return target_center_x, target_x
-
-
-def main_loop():
-    """メインループ関数"""
-    global seg, target_detected, interval_serial_send_start_time, d_x, d_y
-    fps, total_fps, avr_fps, fps_count = 0, 0, 0, 0
-    received_serial = None
     stop = False
 
-    while True:
-        seg += 1
-        frame_start_time = time.time()
-        target_detected = False
-        target_position_str = "X"
-        target_x = 0
+    def elapsed_str(self, start_time):
+        """経過時間の文字列を取得
 
-        # 画面をキャプチャ
-        _, frame = video_capture.read()
-        frame = cv2.flip(frame, 1)
+        Args:
+            start_time (float): 計測開始時刻
 
-        # 対象が画面内にいれば処理
-        targets = detect_target(frame)
-        if len(targets) > 0:
-            target_center_x, target_x = process_target(frame, targets)
-            target_position_str = get_target_pos_str(target_center_x)
-            calculate_motor_power(target_x)
+        Returns:
+            str: 経過時間の文字列
+        """
+        return "{}ms".format(math.floor((time.time() - start_time) * 1000))
 
-        if cv2.waitKey(1) & 0xFF == ord("x"):
-            stop = not stop
+    def print_d(self, text):
+        """デバッグ用画面出力
 
-        if stop:
-            send_serial("STOP", frame)
-        else:
-            # 一定間隔でシリアル通信を行う
-            if time.time() - interval_serial_send_start_time > SERIAL_SEND_INTERVAL:
-                interval_serial_send_start_time = time.time()
-                if cv2.waitKey(1) & 0xFF == ord("a"):
-                    send_serial(("L", 100), frame)
-                    send_serial(("R", 60), frame)
-                if cv2.waitKey(1) & 0xFF == ord("d"):
-                    send_serial(("L", 60), frame)
-                    send_serial(("R", 100), frame)
-                send_serial(("L", motor_power_l), frame)
-                send_serial(("R", motor_power_r), frame)
-
-        received_serial = print_serial(received_serial)
-
-        # 処理にかかった時間
-        fps_end_time = time.time()
-        time_taken = fps_end_time - frame_start_time
-        if time_taken > 0:
-            fps = 1 / time_taken
-
-        # FPS計算
-        fps_count += 1
-        total_fps += fps
-        fps_count, total_fps, avr_fps = calculate_fps(fps_count, total_fps, avr_fps)
-
-        if seg > 9:
-            seg = 0
-
-        # Debug
-        debug_text = (
-            "{} {} x {} {} x: {} y: {} avr_fps: {} fps: {} target_position: {}\n"
-            "target_x: {} motor_power_l: {} motor_power_r: {}\n"
-            "socket_connected: {} port: {} baud: {} data: {}\n"
-            "STOP: {} serial_received: {}".format(
-                seg,
-                math.floor(frame_width),
-                math.floor(frame_height),
-                "O" if target_position_str != "X" else "X",
-                d_x,
-                d_y,
-                math.floor(avr_fps),
-                math.floor(fps),
-                target_position_str,
-                target_x,
-                motor_power_l,
-                motor_power_r,
-                com_connected,
-                SERIAL_PORT,
-                SERIAL_BAUD,
-                serial_sent,
-                stop,
-                received_serial,
+        Args:
+            frame (MatLike): フレーム
+            text (str): 出力文字列
+        """
+        text_lines = text.split("\n")
+        for index, line in enumerate(text_lines, start=1):
+            cv2.putText(
+                self.frame, line, (5, 15 * index), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0)
             )
+
+    def print_key_binds(self):
+        """キーバインドを出力
+
+        Args:
+            frame (MatLike): フレーム
+        """
+        if self.stop:
+            s = "START"
+        else:
+            s = Commands.STOP
+        text = "PRESS X TO {}.\nPRESS Q TO EXIT.\n{}".format(s, self.seg)
+        text_lines = text.split("\n")
+        text_lines.reverse()
+        for index, line in enumerate(text_lines, start=1):
+            text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+            text_x = math.floor(self.frame_width - text_size[0] - 15)
+            text_y = math.floor(self.frame_height - (15 * index)) + 5
+            cv2.putText(
+                self.frame, line, (text_x, text_y), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0)
+            )
+
+    def print_serial_stat(self):
+        """シリアル通信状況の出力
+
+        Args:
+            frame (MatLike): フレーム
+        """
+        text = "SERIAL SENT."
+        text_y = math.floor(self.frame_height - 10)
+        cv2.putText(self.frame, text, (5, text_y), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0))
+
+    def print_stop(self):
+        """ストップ出力
+
+        Args:
+            frame (MatLike): フレーム
+        """
+        text = "STOP"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 3
+        thickness = 10
+
+        text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+
+        text_x = (int)(self.frame_width - text_size[0]) // 2
+        text_y = (int)(self.frame_height + text_size[1]) // 2
+
+        cv2.putText(self.frame, text, (text_x, text_y), font, font_scale, (0, 0, 255), thickness)
+
+        padding = 50
+        top_left = (text_x - padding, text_y - text_size[1] - padding)
+        bottom_right = (text_x + text_size[0] + padding, text_y + padding)
+        cv2.rectangle(self.frame, top_left, bottom_right, (0, 255, 255), thickness)
+
+    def calculate_fps(self, fps_count, total_fps, avr_fps):
+        """FPSを計算
+
+        Args:
+            fps_count (int): 平均FPSを算出するための呼び出し回数カウント
+            total_fps (int): カウント中の合計FPS
+            avr_fps (int): 平均FPS
+
+        Returns:
+            fps_count, total_fps, avr_fps
+        """
+        if fps_count >= 10:
+            fps_count = 0
+            avr_fps = total_fps / 10
+            total_fps = 0
+        return fps_count, total_fps, avr_fps
+
+    def detect_target(self):
+        """画像から対象を検出
+
+        Args:
+            frame (MatLike): フレーム
+
+        Returns:
+            Sequence[Rect]: 座標情報
+        """
+        gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
+        target = self.cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30),
+            flags=cv2.CASCADE_SCALE_IMAGE,
         )
-        print_d(frame, debug_text)
-        print_key_binds(frame)
+        return target
 
-        cv2.imshow("Metoki - Human Tracker", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+    def send(self, data):
+        if (not Commands.contains(self.serial.get_command(data))):
+            return False
+        
+        ret = self.serial.send_serial(data)
+        if ret:
+            self.print_serial_stat()
+        self.exec_sent_command()
 
+        if data != Commands.CHECK:
+            self.app.queue.add("s", self.serial.serial_sent)
 
-# OpenCV Haar分類器の指定
-cascPath = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-face_cascade = cv2.CascadeClassifier(cascPath)
+        return True
 
-# フレームの設定
-video_capture = cv2.VideoCapture(0)
-video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    def exec_sent_command(self):
+        c = self.serial.command_sent.upper()
+        if c == Commands.STOP:
+            self.stop = True
+            self.app.update_stop()
+        if c == Commands.START:
+            self.start_motor()
 
-frame_width = video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)
-frame_height = video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    def calculate_motor_power(self, target_x):
+        """モーター出力を計算
 
-# 顔座標
-d_x, d_y = 0, 0
-face_x, face_center_x = 0, 0
+        Args:
+            target_x (int): 対象座標X
+        """
+        if target_x < 0:
+            self.motor_power_l = math.floor(math.sqrt(-target_x))
+            self.motor_power_r = math.floor(math.sqrt(-(target_x * 4)))
+            self.motor_power_l -= self.motor_power_r
+        else:
+            self.motor_power_l = math.floor(math.sqrt(target_x * 4))
+            self.motor_power_r = math.floor(math.sqrt(target_x))
+            self.motor_power_r -= self.motor_power_l
 
-# モーター出力
-max_motor_power_threshold = frame_width / 4
-motor_power_l, motor_power_r = 0, 0
+        self.motor_power_l += 70
+        self.motor_power_r += 70
 
-# シリアル通信送信時の間隔測定用
-interval_serial_send_start_time = 0
+        if self.motor_power_l > 100:
+            self.motor_power_l = 100
+        if self.motor_power_r > 100:
+            self.motor_power_r = 100
 
-seg = 0
+    def get_target_pos_str(self, target_center_x):
+        """対象のいる位置を文字列で取得
 
-connect_socket()
+        Args:
+            target_center_x (int): 対象のX座標
 
-print("[System] Startup completed. Elapsed time:", elapsed_str(time_startup))
+        Returns:
+            str: 結果
+        """
+        if target_center_x < self.frame_width // 3:
+            target_position_str = "L"
+        elif target_center_x < 2 * self.frame_width // 3:
+            target_position_str = "C"
+        else:
+            target_position_str = "R"
 
-root = tk.Tk()
-app = gui.App(root)
-main_loop()
+        return target_position_str
 
-send_serial("STOP")
-com.close()
-video_capture.release()
-cv2.destroyAllWindows()
+    def process_target(self, target):
+        """画像中の対象を囲む
+
+        Args:
+            frame (MatLike): フレーム
+            target (Sequence[Rect]): 座標情報
+
+        Returns:
+            target_center_x, target_x: 顔座標原点X, 顔座標X
+        """
+        for x, y, w, h in target:
+            self.d_x = x
+            self.d_y = y
+            self.target_detected = True
+
+            target_center_x = x + w // 2
+            target_x = math.floor(target_center_x - self.frame_width / 2)
+
+            cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            return target_center_x, target_x
+
+    def stop_motor(self):
+        self.send(Commands.STOP)
+
+    def start_motor(self):
+        if self.serial.com_connected:
+            self.stop = False
+            self.app.update_stop()
+
+    def main_loop(self):
+        fps, total_fps, avr_fps, fps_count, bkl, bkr = 0, 0, 0, 0, 0, 0
+        received_serial = None
+        disconnect = False
+
+        while True:
+            self.seg += 1
+            frame_start_time = time.time()
+            self.target_detected = False
+            target_position_str = "X"
+            target_x = 0
+
+            # 画面をキャプチャ
+            _, frame = self.video_capture.read()
+            self.frame = cv2.flip(frame, 1)
+
+            # 対象が画面内にいれば処理
+            targets = self.detect_target()
+            bkl = self.motor_power_l
+            bkr = self.motor_power_r
+            if len(targets) > 0:
+                target_center_x, target_x = self.process_target(targets)
+                target_position_str = self.get_target_pos_str(target_center_x)
+                self.calculate_motor_power(target_x)
+
+            # 一定間隔でシリアル通信を行う
+            if (
+                time.time() - self.interval_serial_send_start_time
+                > SERIAL_SEND_INTERVAL
+            ):
+                self.interval_serial_send_start_time = time.time()
+
+                if bkl != self.motor_power_l:
+                    self.send((Commands.SET_SPD_LEFT, self.motor_power_l))
+                if bkr != self.motor_power_r:
+                    self.send((Commands.SET_SPD_RIGHT, self.motor_power_r))
+                
+                self.send(Commands.CHECK)
+
+            res, received_serial = self.serial.print_serial(received_serial)
+            if res:
+                self.app.queue.add("r", received_serial)
+
+            # 処理にかかった時間
+            fps_end_time = time.time()
+            time_taken = fps_end_time - frame_start_time
+            if time_taken > 0:
+                fps = 1 / time_taken
+
+            # FPS計算
+            fps_count += 1
+            total_fps += fps
+            fps_count, total_fps, avr_fps = self.calculate_fps(
+                fps_count, total_fps, avr_fps
+            )
+
+            if self.seg > 9:
+                self.seg = 0
+
+            if not self.serial.com_connected:
+                self.stop = True
+                self.print_stop()
+                self.serial.connect_socket()
+                if not disconnect:
+                    self.app.update_stop(connected=False)
+                    disconnect = True
+            else:
+                if disconnect:
+                    self.app.update_stop(connected=True)
+                disconnect = False
+
+            # Debug
+            debug_text = (
+                "{} {} x {} {} x: {} y: {} avr_fps: {} fps: {} target_position: {}\n"
+                "target_x: {} self.motor_power_l: {} self.motor_power_r: {}\n"
+                "socket_connected: {} port: {} baud: {} data: {}\n"
+                "STOP: {} serial_received: {}".format(
+                    self.seg,
+                    math.floor(self.frame_width),
+                    math.floor(self.frame_height),
+                    "O" if target_position_str != "X" else "X",
+                    self.d_x,
+                    self.d_y,
+                    math.floor(avr_fps),
+                    math.floor(fps),
+                    target_position_str,
+                    target_x,
+                    self.motor_power_l,
+                    self.motor_power_r,
+                    self.serial.com_connected,
+                    SERIAL_PORT,
+                    SERIAL_BAUD,
+                    self.serial.serial_sent,
+                    self.stop,
+                    received_serial,
+                )
+            )
+            self.app.update_seg(self.seg)
+            self.print_d(debug_text)
+            self.print_key_binds()
+
+            if self.stop:
+                self.print_stop()
+
+            self.app.update_frame(self.frame)
+
+    def close(self):
+        self.stop_motor()
+        self.serial.close()
+        self.video_capture.release()
+        cv2.destroyAllWindows()
+
+    def __init__(self):
+        # 起動時間計測
+        print("[System] Starting up...")
+        time_startup = time.time()
+
+        # OpenCV Haar分類器の指定
+        cascPath = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        self.cascade = cv2.CascadeClassifier(cascPath)
+
+        # フレームの設定
+        self.video_capture = cv2.VideoCapture(1)
+        self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+        self.frame_width = self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self.frame_height = self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        self.frame = None
+
+        # 顔座標
+        self.d_x, self.d_y = 0, 0
+        self.face_x, self.face_center_x = 0, 0
+
+        # モーター出力
+        self.max_motor_power_threshold = self.frame_width / 4
+        self.motor_power_l, self.motor_power_r = 0, 0
+
+        # シリアル通信送信時の間隔測定用
+        self.interval_serial_send_start_time = 0
+
+        self.seg = 0
+
+        self.serial.connect_socket()
+
+        print(
+            "[System] Startup completed. Elapsed time:", self.elapsed_str(time_startup)
+        )
+
+        self.root = tk.Tk()
+        self.app = gui.App(self, self.root)
+
+    def start(self):
+        tracker_thread = threading.Thread(target=self.main_loop)
+        tracker_thread.daemon = True
+        tracker_thread.start()
+
+        self.root.mainloop()
+        self.close()
+
+if __name__ == "__main__":
+    tracker = Tracker()
+    tracker.start()
