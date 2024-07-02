@@ -12,6 +12,7 @@ STICKY_DOWN = "s"
 STICKY_RIGHT = "e"
 STICKY_LEFT = "w"
 STICKY_CENTER = "nsew"
+STICKY_CENTER_HORIZONTAL = "ew"
 
 
 class App:
@@ -25,27 +26,40 @@ class App:
         self.root.bind("<KeyPress>", self.key_pressed)
         self.root.bind("<Button-1>", self.on_click)
 
-        self.video_frame = tk.Label(root)
-        self.video_frame.grid(row=0, column=0, padx=(DEF_MARGIN, 0), pady=DEF_MARGIN)
+        self.main_frame = tk.Frame(root)
+        self.main_frame.grid(row=0, column=0, padx=(DEF_MARGIN, 0), pady=(DEF_MARGIN, 0), sticky=STICKY_UP)
+
+        self.video_frame = tk.Label(self.main_frame)
+        self.video_frame.grid(row=0, column=0, padx=0, pady=0)
+
+        self.bottom_frame = tk.Frame(self.main_frame)
+        self.bottom_frame.grid(row=1, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_CENTER)
+
+        self.var_enable_tracking = tk.IntVar(value=1)
+        self.enable_tracking_checkbox = tk.Checkbutton(self.bottom_frame, text="Enable tracking", variable=self.var_enable_tracking)
+        self.enable_tracking_checkbox.grid(row=0, column=0, padx=0, pady=0, sticky=STICKY_LEFT)
+
+        self.label_wheel = tk.Label(self.bottom_frame)
+        self.label_wheel.grid(row=0, column=1, padx=0, pady=0, sticky=STICKY_CENTER_HORIZONTAL)
 
         self.control_frame = tk.Frame(root)
         self.control_frame.grid(row=0, column=1, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_UP)
 
         self.command_frame = tk.Frame(self.control_frame)
-        self.command_frame.grid(row=0, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_UP)
+        self.command_frame.grid(row=0, column=0, padx=DEF_MARGIN, pady=0, sticky=STICKY_UP)
 
-        self.command_label = tk.Label(self.command_frame, text="Command: ")
-        self.command_label.grid(row=0, column=0, padx=0, pady=5, sticky=STICKY_LEFT)
+        self.command_label = tk.Label(self.command_frame, text="Command:")
+        self.command_label.grid(row=0, column=0, padx=0, pady=0, sticky=STICKY_LEFT)
 
         self.command_entry = tk.Entry(self.command_frame, width=25)
-        self.command_entry.grid(row=0, column=1, padx=0, pady=5)
+        self.command_entry.grid(row=0, column=1, padx=DEF_MARGIN, pady=5)
         self.command_entry.bind("<Return>", self.comamnd_enter_pressed)
         self.command_entry.focus_set()
 
         self.send_button = ttk.Button(self.command_frame, text="Send", command=self.send_command)
-        self.send_button.grid(row=0, column=2, padx=5, pady=5)
+        self.send_button.grid(row=0, column=2, padx=0, pady=5)
 
-        self.received_text = st.ScrolledText(self.control_frame, wrap=tk.WORD, width=40, height=10)
+        self.received_text = st.ScrolledText(self.control_frame, wrap=tk.WORD, width=40, height=10, font=("Consolas", 10))
         self.received_text.grid(row=1, column=0, padx=0, pady=(5, 0))
 
         self.var_auto_scroll_received = tk.IntVar(value=1)
@@ -56,7 +70,7 @@ class App:
         self.label_received = tk.Label(self.control_frame, text="Initialized.", anchor="w", justify="left", font=custom_font)
         self.label_received.grid(row=3, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT)
 
-        self.sent_text = st.ScrolledText(self.control_frame, wrap=tk.WORD, width=40, height=10)
+        self.sent_text = st.ScrolledText(self.control_frame, wrap=tk.WORD, width=40, height=10, font=("Consolas", 10))
         self.sent_text.grid(row=4, column=0, padx=0, pady=(5, 0))
 
         self.var_auto_scroll_sent = tk.IntVar(value=1)
@@ -161,6 +175,10 @@ class App:
     def update_status(self, status):
         self.label_status.config(text=status)
 
+    def update_wheel(self):
+        if self.queue.has("g"):
+            self.label_wheel.config(text=self.queue.get("g"))
+
     def update_seg(self, seg):
         self.label_seg.config(text=seg)
 
@@ -175,6 +193,7 @@ class App:
         
         self.update_sent_command()
         self.update_received_command()
+        self.update_wheel()
 
     def __del__(self):
         self.tracker.close()

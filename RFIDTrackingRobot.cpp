@@ -46,29 +46,15 @@ MotorWheel wheel1(3, 2, 4, 5,
  */
 Omni3WD Omni(&wheel1, &wheel2, &wheel3);
 
-/**
- * @brief ホイールの速度を設定
- * 
- * @param left 
- * @param right 
- */
-void setWheelSpeed(int left, int right) {
-    /**
-     * @brief 開発環境では左右反転
-     */
-    Omni.wheelLeftSetSpeedMMPS(right);
-    Omni.wheelRightSetSpeedMMPS(left);
-}
-
 int speedL = 0, speedR = 0, dirL = 0, dirR = 0;
 
 /**
- * @brief 移動
+ * @brief モーター出力を変更
  * 
  * @param left 左モーター出力% (-1で変更なし)
  * @param right 右モーター出力% (-1で変更なし)
  */
-void setSpeed(int left=-1, int right=-1, bool force=false) {
+void setWheelSpeed(int left=-1, int right=-1, bool force=false) {
     int lp, rp;
 
     if (left == -1) {
@@ -100,9 +86,10 @@ void setSpeed(int left=-1, int right=-1, bool force=false) {
         }
     } else {
         if (left != -1 || force) {
-            Serial.println("Left Speed: " + String(speedL));
             if (lp != speedL || force) {
-                Serial.println("Set left speed: " + String(lp));
+                if (!force) {
+                    Serial.println("Set left speed: " + String(lp));
+                }
                 if (dirL == 0) {
                     Omni.wheelLeftSetSpeedMMPS(lp);
                 } else {
@@ -112,9 +99,10 @@ void setSpeed(int left=-1, int right=-1, bool force=false) {
             } 
         }
         if (right != -1 || force) {
-            Serial.println("Right Speed: " + String(speedR));
             if (rp != speedR || force) {
-                Serial.println("Set right speed: " + String(rp));
+                if (!force) {
+                    Serial.println("Set right speed: " + String(rp));
+                }
                 if (dirR == 0) {
                     Omni.wheelRightSetSpeedMMPS(rp, DIR_BACKOFF);
                 } else {
@@ -166,38 +154,46 @@ String getSerialStr() {
 }
 
 unsigned long startMillis;
+String prevCommand;
 
 /**
  * @brief コマンドを実行
  * 
  * @param cmdStr コマンド文字列
  */
-void execute(String cmdStr) {
+void executeCommand(String cmdStr) {
     model::Command cmd(cmdStr);
     String command = cmd.getCommand();
     double value = cmd.getValue();
     int i_value = (int)value;
+
+    if (cmdStr != "CONNECT_WHEEL") {
+        prevCommand = cmdStr;
+    }
 
     if (command == "YO") {
         startMillis = millis();
         return;
     }
     if (command == "L") {
-        setSpeed(i_value, -1);
+        setWheelSpeed(i_value, -1);
     }
     if (command == "R") {
-        setSpeed(-1, i_value);
+        setWheelSpeed(-1, i_value);
     }
     if (command == "L_DIRECTION") {
         dirL = i_value;
-        setSpeed(-1, -1, true);
+        setWheelSpeed(-1, -1, true);
     }
     if (command == "R_DIRECTION") {
         dirR = i_value;
-        setSpeed(-1, -1, true);
+        setWheelSpeed(-1, -1, true);
     }
     if (command == "STOP") {
-        setSpeed(0, 0);
+        setWheelSpeed(0, 0);
+    }
+    if (command == "CONNECT_WHEEL") {
+        setWheelSpeed(-1, -1, true);
     }
 }
 } // namespace RFIDTR
@@ -226,10 +222,13 @@ void loop() {
 
     if (Serial.available()) {
         String data = RFIDTR::getSerialStr();
-        RFIDTR::execute(data);
+        RFIDTR::executeCommand(data);
     } else {
         if (millis() - RFIDTR::startMillis > 1000) {
-            RFIDTR::execute("STOP");
+            RFIDTR::executeCommand("STOP");
+        } else {
+            RFIDTR::executeCommand(RFIDTR::prevCommand);
+            RFIDTR::executeCommand("CONNECT_WHEEL");
         }
     }
 }
