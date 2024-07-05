@@ -1,8 +1,12 @@
 class TQueue:
     queue: list = []
 
-    def add(self, id, queue):
+    def add(self, id, queue=""):
         self.queue.append([id, queue])
+
+    def add_all(self, id, queues):
+        for queue in queues:
+            self.queue.append([id, queue])
 
     def get(self, id):
         if not self.has(id):
@@ -23,6 +27,23 @@ class TQueue:
 
         return ret
     
+    def get_all(self, id):
+        if not self.has(id):
+            return None   
+         
+        ret = []
+        filtered_data = []
+        for item in self.queue:
+            if item[0] == id:
+                ret.append(item[1])
+            else:
+                filtered_data.append(item)
+        
+        self.queue.clear()
+        self.queue = filtered_data
+
+        return ret
+        
     def has(self, id):
         if len(self.queue) == 0:
             return False

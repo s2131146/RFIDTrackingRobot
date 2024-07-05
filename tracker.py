@@ -10,6 +10,7 @@ import math
 import tkinter as tk
 import pyrealsense2 as rs
 import numpy as np
+import asyncio
 
 from constants import Commands
 from constants import Cascades
@@ -21,14 +22,16 @@ SERIAL_PORT = "COM3"
 SERIAL_BAUD = 19200
 SERIAL_SEND_INTERVAL = 0.1
 
+TCP_PORT = 8001
+
 # キャプチャウィンドウサイズ
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
 CAM_NO = 0
 
-DEBUG_SERIAL = False
-DEBUG_USE_WEBCAM = False
+DEBUG_SERIAL = True
+DEBUG_USE_WEBCAM = True
 
 
 class Tracker:
@@ -38,7 +41,7 @@ class Tracker:
     interval_serial_send_start_time = seg = serial_sent = None
 
     serial = ts.TrackerSocket(
-        SERIAL_PORT, SERIAL_BAUD, SERIAL_SEND_INTERVAL, DEBUG_SERIAL
+        SERIAL_PORT, SERIAL_BAUD, SERIAL_SEND_INTERVAL, DEBUG_SERIAL, TCP_PORT
     )
 
     stop = False
@@ -255,7 +258,15 @@ class Tracker:
             cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             text_org = (x, y - 10)
-            cv2.putText(self.frame, "TARGET", text_org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.putText(
+                self.frame,
+                "TARGET",
+                text_org,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+            )
 
             return target_center_x, target_x
 
@@ -263,7 +274,7 @@ class Tracker:
         self.send(Commands.STOP)
 
     def start_motor(self):
-        if self.serial.com_connected:
+        if self.serial.ser_connected:
             self.stop = False
             self.app.update_stop()
 
@@ -280,13 +291,13 @@ class Tracker:
             frame, no_obs, x: 描画後フレーム, 障害物がないか, 安全なX座標
         """
         depth_image = np.asanyarray(depth_frame.get_data())
-        roi_depth = depth_image[:int(depth_image.shape[0]*4/5), :]
-        roi_color = frame[:int(frame.shape[0]*4/5), :]
+        roi_depth = depth_image[: int(depth_image.shape[0] * 4 / 5), :]
+        roi_color = frame[: int(frame.shape[0] * 4 / 5), :]
 
         roi_depth = cv2.GaussianBlur(roi_depth, (5, 5), 0)
 
-        max_distance = 300 # 300mm
-        min_distance = 100 # 100mm
+        max_distance = 300  # 300mm
+        min_distance = 100  # 100mm
 
         mask = np.logical_and(roi_depth > min_distance, roi_depth < max_distance)
         obstacle_image = np.zeros_like(roi_depth)
@@ -296,7 +307,9 @@ class Tracker:
         obstacle_image = cv2.morphologyEx(obstacle_image, cv2.MORPH_CLOSE, kernel)
         obstacle_image = cv2.morphologyEx(obstacle_image, cv2.MORPH_OPEN, kernel)
 
-        contours, _ = cv2.findContours(obstacle_image.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(
+            obstacle_image.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        )
 
         center_x = roi_color.shape[1] // 2
 
@@ -320,7 +333,9 @@ class Tracker:
                     max_distance_to_center = distance_to_center
 
                 detected_obstacles_info.append((x, y, w, h, cv2.contourArea(contour)))
-                all_obstacle_x_positions = [info[0] + info[2] // 2 for info in detected_obstacles_info]
+                all_obstacle_x_positions = [
+                    info[0] + info[2] // 2 for info in detected_obstacles_info
+                ]
 
                 # 安全なX座標を計算
                 if detected_obstacles_info:
@@ -330,11 +345,21 @@ class Tracker:
                 else:
                     obstacle_free_center_x = center_x
 
-                obstacle_free_center_x = math.floor(obstacle_center_x - self.frame_width / 2)
+                obstacle_free_center_x = math.floor(
+                    obstacle_center_x - self.frame_width / 2
+                )
 
                 cv2.rectangle(roi_color, (x, y), (x + w, y + h), (0, 0, 255), 2)
                 text_org = (x, y - 10)
-                cv2.putText(frame, "OBSTACLE {}mm".format(distance_to_center), text_org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                cv2.putText(
+                    frame,
+                    "OBSTACLE {}mm".format(distance_to_center),
+                    text_org,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 255),
+                    1,
+                )
 
         return frame, no_obstacle_detected, obstacle_free_center_x
 
@@ -349,6 +374,7 @@ class Tracker:
             self.target_detected = False
             target_position_str = "X"
             target_x = 0
+            no_obs, safe_x = True, 0
 
             # 画面をキャプチャ
             if DEBUG_USE_WEBCAM:
@@ -370,7 +396,7 @@ class Tracker:
                 target_center_x, target_x = self.process_target(targets)
                 target_position_str = self.get_target_pos_str(target_center_x)
                 self.calculate_motor_power(target_x)
-            
+
             # 障害物がある場合、避ける
             if not no_obs:
                 self.calculate_motor_power(-safe_x)
@@ -403,9 +429,10 @@ class Tracker:
 
                 self.send(Commands.CHECK)
 
-            res, received_serial = self.serial.print_serial(received_serial)
-            if res:
-                self.app.queue.add("r", received_serial)
+            received = self.serial.get_received_queue()
+            if received:
+                self.app.queue.add_all("r", received)
+                received_serial = received[-1]
 
             # 処理にかかった時間
             fps_end_time = time.time()
@@ -423,10 +450,11 @@ class Tracker:
             if self.seg > 9:
                 self.seg = 0
 
-            if not self.serial.com_connected:
+            if not self.serial.ser_connected:
                 self.stop = True
                 self.print_stop()
-                self.serial.connect_socket()
+                if self.serial.test_connect():
+                    asyncio.run(self.serial.connect_socket())
                 if not disconnect:
                     self.app.update_stop(connected=False)
                     disconnect = True
@@ -454,14 +482,14 @@ class Tracker:
                     target_x,
                     self.motor_power_l,
                     self.motor_power_r,
-                    self.serial.com_connected,
+                    self.serial.ser_connected,
                     SERIAL_PORT,
                     SERIAL_BAUD,
                     self.serial.serial_sent,
                     self.stop,
                     received_serial,
                     not no_obs,
-                    safe_x
+                    safe_x,
                 )
             )
             self.app.update_seg(self.seg)
@@ -484,7 +512,7 @@ class Tracker:
 
         cv2.destroyAllWindows()
 
-    def __init__(self):
+    async def init(self):
         # 起動時間計測
         print("[System] Starting up...")
         time_startup = time.time()
@@ -503,8 +531,12 @@ class Tracker:
         else:
             self.rs_pipeline = rs.pipeline()
             self.rs_config = rs.config()
-            self.rs_config.enable_stream(rs.stream.color, FRAME_WIDTH, FRAME_HEIGHT, rs.format.bgr8, 60)
-            self.rs_config.enable_stream(rs.stream.depth, FRAME_WIDTH, FRAME_HEIGHT, rs.format.z16, 60)
+            self.rs_config.enable_stream(
+                rs.stream.color, FRAME_WIDTH, FRAME_HEIGHT, rs.format.bgr8, 60
+            )
+            self.rs_config.enable_stream(
+                rs.stream.depth, FRAME_WIDTH, FRAME_HEIGHT, rs.format.z16, 60
+            )
             self.rs_pipeline.start(self.rs_config)
 
             profile = self.rs_pipeline.get_active_profile()
@@ -528,7 +560,8 @@ class Tracker:
 
         self.seg = 0
 
-        self.serial.connect_socket()
+        await self.serial.connect_socket()
+        asyncio.create_task(self.serial.loop_serial())
 
         print(
             "[System] Startup completed. Elapsed time:", self.elapsed_str(time_startup)
@@ -546,6 +579,11 @@ class Tracker:
         self.close()
 
 
-if __name__ == "__main__":
+async def main():
     tracker = Tracker()
+    await tracker.init()
     tracker.start()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
