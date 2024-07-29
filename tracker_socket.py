@@ -1,4 +1,5 @@
-import threading
+import math
+import time
 import socket
 import traceback
 import tqueue
@@ -29,7 +30,7 @@ class TrackerSocket:
         except socket.error as e:
             print("[Socket] An error occured during getting local IP: {}".format(e))
             return None
-        
+
     def test_connect(self):
         try:
             test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -38,8 +39,14 @@ class TrackerSocket:
             test.close()
             return True
         except socket.error as e:
-            print("[Socket] An error occured at connect_socket: {}".format(traceback.format_exc()))
+            print(
+                "[Socket] An error occured at connect_socket: {}".format(
+                    traceback.format_exc()
+                )
+            )
             return False
+
+    ser_connected = False
 
     async def connect_socket(self):
         """シリアル通信を開始
@@ -55,54 +62,71 @@ class TrackerSocket:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client_socket.settimeout(0.5)
             self.client_socket.setblocking(False)
-            self.socket_loop = asyncio.get_event_loop()
-            await self.socket_loop.sock_connect(self.client_socket, (self.tcp_ip, self.tcp_port))
+            await asyncio.get_event_loop().sock_connect(
+                self.client_socket, (self.tcp_ip, self.tcp_port)
+            )
             self.ser_connected = True
             print("[Socket] Socket connected.")
+            self.send_startup()
         except socket.error as e:
-            print("[Socket] An error occured at connect_socket: {}".format(traceback.format_exc()))
+            print(
+                "[Socket] An error occured at connect_socket: {}".format(
+                    traceback.format_exc()
+                )
+            )
             self.ser_connected = False
         finally:
             return self.ser_connected
 
     async def loop_serial(self):
         try:
-            while True:
-                data = await self.socket_loop.sock_recv(self.client_socket, 1024)
-                if not data:
-                    continue
-                data = str(data.decode())
-                parts = data.split(":")
-                cmd = parts[0]
-                id = parts[1]
-                value = parts[2]
-                value_bool = Utils.try_to_bool(value)
-                if cmd == "force":
-                    print(value)
-                if cmd == "print":
-                    self.print_serial(value)
-                if id != -1:
-                    if self.queue.get("w:{}".format(id)) is not None:
-                        self.queue.add(id, value_bool)
+            if not self.ser_connected:
+                await self.connect_socket()
+            print("LOOP")
+            data = await asyncio.get_event_loop().sock_recv(self.client_socket, 1024)
+            if not data:
+                return None
+            data = str(data.decode())
+            parts = data.split(":")
+            cmd = parts[0]
+            id = parts[1]
+            value = parts[2]
+            print(value)
+            value_bool = Utils.try_to_bool(value)
+            if cmd == "force":
+                print(value)
+            if cmd == "print":
+                self.print_serial(value)
+            if id != -1:
+                if self.queue.get("w:{}".format(id)) is not None:
+                    self.queue.add(id, value_bool)
         except Exception as e:
-            print("[Socket] An error occured at loop_serial: {}".format(traceback.format_exc()))
+            print(
+                "[Socket] An error occured at loop_serial: {}".format(
+                    traceback.format_exc()
+                )
+            )
         finally:
             self.client_socket.close()
 
     def send_startup(self):
         self.client_socket.sendall(
-            "setup:{}:{}:{}:{}:{}",
-            self.ser_port,
-            self.baud,
-            self.interval,
-            self.tcp_ip,
-            self.tcp_port,
+            "setup:{}:{}:{}:{}:{}".format(
+                self.ser_port, self.baud, self.interval, self.tcp_ip, self.tcp_port
+            ).encode()
         )
 
     def wait_for_result(self, data, id):
+        if not self.ser_connected:
+            print("[Socket] Not connected. Cannot start loop_serial.")
+            return
         self.queue.add("w:{}".format(id))
         self.client_socket.sendall(data.encode())
+        s = time.time()
         while not self.queue.has(id):
+            """if math.floor((time.time() - s) * 1000) > 500:
+                self.connect_socket()
+                return None"""
             pass
         return self.queue.get(id)
 
@@ -133,12 +157,19 @@ class TrackerSocket:
         data += "\n"
 
         try:
-            self.wait_for_result(data, self.data_id)
+            res = self.wait_for_result(data, self.data_id)
+            if (res is None):
+                print("[Socket] No connection now")
+                self.ser_connected = False
             return True
         except socket.error as e:
             self.ser_connected = False
             if self.debug:
-                print("[Socket] Failed to send to client: {}".format(traceback.format_exc()))
+                print(
+                    "[Socket] Failed to send to client: {}".format(
+                        traceback.format_exc()
+                    )
+                )
             return False
 
     def get_command(self, data):

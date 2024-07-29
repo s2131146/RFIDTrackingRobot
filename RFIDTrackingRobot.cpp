@@ -26,23 +26,20 @@ SONAR sonar11(0x11), sonar12(0x12), sonar13(0x13);
 
 irqISR(irq1, isr1);
 /// @brief 中央モーター
-MotorWheel wheel2(9, 8, 6, 7,
-                  &irq1);  // Pin9:PWM, Pin8:DIR, Pin6:PhaseA, Pin7:PhaseB
+MotorWheel wheel2(9, 8, 6, 7, &irq1);
 
 irqISR(irq2, isr2);
 /// @brief 左モーター
-MotorWheel wheel3(10, 11, 14, 15,
-                  &irq2);  // Pin10:PWM, Pin11:DIR, Pin14:PhaseA, Pin15:PhaseB
+MotorWheel wheel3(10, 11, 14, 15, &irq2);
 
 irqISR(irq3, isr3);
 /// @brief 右モーター
-MotorWheel wheel1(3, 2, 4, 5,
-                  &irq3);  // Pin3:PWM, Pin2:DIR, Pin4:PhaseA, Pin5:PhaseB
+MotorWheel wheel1(3, 2, 4, 5, &irq3);
 
 /**
  * @brief オムニホイールオブジェクト
- * 
- * @return Omni3WD 
+ *
+ * @return Omni3WD
  */
 Omni3WD Omni(&wheel1, &wheel2, &wheel3);
 
@@ -50,11 +47,11 @@ int speedL = 0, speedR = 0, dirL = 0, dirR = 0;
 
 /**
  * @brief モーター出力を変更
- * 
+ *
  * @param left 左モーター出力% (-1で変更なし)
  * @param right 右モーター出力% (-1で変更なし)
  */
-void setWheelSpeed(int left=-1, int right=-1, bool force=false) {
+void setWheelSpeed(int left = -1, int right = -1, bool force = false) {
     int lp, rp;
 
     if (left == -1) {
@@ -96,7 +93,7 @@ void setWheelSpeed(int left=-1, int right=-1, bool force=false) {
                     Omni.wheelLeftSetSpeedMMPS(lp, DIR_BACKOFF);
                 }
                 speedL = lp;
-            } 
+            }
         }
         if (right != -1 || force) {
             if (rp != speedR || force) {
@@ -110,7 +107,7 @@ void setWheelSpeed(int left=-1, int right=-1, bool force=false) {
                 }
             }
             speedR = rp;
-        }        
+        }
     }
 
     Omni.PIDRegulate();
@@ -135,7 +132,7 @@ String receivedStr = "";
 
 /**
  * @brief シリアル通信で文字列を受信 (EOFまで)
- * 
+ *
  * @return String 受信した文字列
  */
 String getSerialStr() {
@@ -158,7 +155,7 @@ String prevCommand;
 
 /**
  * @brief コマンドを実行
- * 
+ *
  * @param cmdStr コマンド文字列
  */
 void executeCommand(String cmdStr) {
@@ -196,7 +193,7 @@ void executeCommand(String cmdStr) {
         setWheelSpeed(-1, -1, true);
     }
 }
-} // namespace RFIDTR
+}  // namespace RFIDTR
 
 /**
  * @brief Setup function of Arduino
@@ -208,7 +205,7 @@ void setup() {
     Serial.println("Setup completed");
 }
 
-void (* reset) (void) = 0;
+void (*reset)(void) = 0;
 
 /**
  * @brief Loop function of Arduino

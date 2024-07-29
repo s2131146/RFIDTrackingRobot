@@ -35,6 +35,7 @@ DEBUG_USE_WEBCAM = True
 
 
 class Tracker:
+    """申し訳ないレベルのグローバル変数"""
     root = app = cascade = video_capture = None
     frame_width = frame_height = d_x = d_y = face_x = face_center_x = None
     max_motor_power_threshold = motor_power_l = motor_power_r = None
@@ -325,10 +326,8 @@ class Tracker:
                 x, y, w, h = cv2.boundingRect(contour)
                 obstacle_center_x = x + w // 2
 
-                # 画像の中央から障害物までの距離を計算
                 distance_to_center = obstacle_center_x - center_x
 
-                # 最も遠い障害物までの距離を更新
                 if abs(distance_to_center) > abs(max_distance_to_center):
                     max_distance_to_center = distance_to_center
 
@@ -337,7 +336,6 @@ class Tracker:
                     info[0] + info[2] // 2 for info in detected_obstacles_info
                 ]
 
-                # 安全なX座標を計算
                 if detected_obstacles_info:
                     min_obstacle_x = min(all_obstacle_x_positions)
                     max_obstacle_x = max(all_obstacle_x_positions)
@@ -376,7 +374,6 @@ class Tracker:
             target_x = 0
             no_obs, safe_x = True, 0
 
-            # 画面をキャプチャ
             if DEBUG_USE_WEBCAM:
                 _, frame = self.video_capture.read()
                 self.frame = cv2.flip(frame, 1)
@@ -387,7 +384,6 @@ class Tracker:
                 depth_frame = frames.get_depth_frame()
                 self.frame, no_obs, safe_x = self.process_obstacles(frame, depth_frame)
 
-            # 対象が画面内にいれば処理
             targets = self.detect_target()
             bkl = self.motor_power_l
             bkr = self.motor_power_r
@@ -397,11 +393,9 @@ class Tracker:
                 target_position_str = self.get_target_pos_str(target_center_x)
                 self.calculate_motor_power(target_x)
 
-            # 障害物がある場合、避ける
             if not no_obs:
                 self.calculate_motor_power(-safe_x)
 
-            # 一定間隔でシリアル通信を行う
             if (
                 time.time() - self.interval_serial_send_start_time
                 > SERIAL_SEND_INTERVAL
@@ -434,13 +428,11 @@ class Tracker:
                 self.app.queue.add_all("r", received)
                 received_serial = received[-1]
 
-            # 処理にかかった時間
             fps_end_time = time.time()
             time_taken = fps_end_time - frame_start_time
             if time_taken > 0:
                 fps = 1 / time_taken
 
-            # FPS計算
             fps_count += 1
             total_fps += fps
             fps_count, total_fps, avr_fps = self.calculate_fps(
@@ -513,11 +505,9 @@ class Tracker:
         cv2.destroyAllWindows()
 
     async def init(self):
-        # 起動時間計測
         print("[System] Starting up...")
         time_startup = time.time()
 
-        # OpenCV Haar分類器の指定
         cascPath = cv2.data.haarcascades + Cascades.FACE
         self.cascade = cv2.CascadeClassifier(cascPath)
 
@@ -547,21 +537,15 @@ class Tracker:
 
         self.frame = None
 
-        # 顔座標
         self.d_x, self.d_y = 0, 0
         self.face_x, self.face_center_x = 0, 0
 
-        # モーター出力
         self.max_motor_power_threshold = self.frame_width / 4
         self.motor_power_l, self.motor_power_r = 0, 0
 
-        # シリアル通信送信時の間隔測定用
         self.interval_serial_send_start_time = 0
 
         self.seg = 0
-
-        await self.serial.connect_socket()
-        asyncio.create_task(self.serial.loop_serial())
 
         print(
             "[System] Startup completed. Elapsed time:", self.elapsed_str(time_startup)
@@ -569,6 +553,13 @@ class Tracker:
 
         self.root = tk.Tk()
         self.app = gui.App(self, self.root)
+
+        tracker_thread = threading.Thread(target=self.run_loop_serial)
+        tracker_thread.daemon = True
+        tracker_thread.start()
+
+    def run_loop_serial(self):
+        asyncio.run(self.serial.loop_serial())
 
     def start(self):
         tracker_thread = threading.Thread(target=self.main_loop)
