@@ -8,7 +8,6 @@ import cv2
 import time
 import math
 import tkinter as tk
-import pyrealsense2 as rs
 import numpy as np
 import asyncio
 
@@ -31,11 +30,12 @@ FRAME_HEIGHT = 480
 CAM_NO = 0
 
 DEBUG_SERIAL = True
-DEBUG_USE_WEBCAM = True
+DEBUG_USE_WEBCAM = False
 
 
 class Tracker:
     """申し訳ないレベルのグローバル変数"""
+
     root = app = cascade = video_capture = None
     frame_width = frame_height = d_x = d_y = face_x = face_center_x = None
     max_motor_power_threshold = motor_power_l = motor_power_r = None
@@ -281,17 +281,16 @@ class Tracker:
 
     detected_obstacles = []
 
-    def process_obstacles(self, frame, depth_frame):
+    def process_obstacles(self, frame, depth_image):
         """障害物を検知し、描画
 
         Args:
             frame (MatLike): フレーム
-            depth_frame: 深度フレーム
+            depth_image: 深度フレーム
 
         Returns:
             frame, no_obs, x: 描画後フレーム, 障害物がないか, 安全なX座標
         """
-        depth_image = np.asanyarray(depth_frame.get_data())
         roi_depth = depth_image[: int(depth_image.shape[0] * 4 / 5), :]
         roi_color = frame[: int(frame.shape[0] * 4 / 5), :]
 
@@ -351,7 +350,7 @@ class Tracker:
                 text_org = (x, y - 10)
                 cv2.putText(
                     frame,
-                    "OBSTACLE {}mm".format(distance_to_center),
+                    "OBSTACLE X:{}".format(distance_to_center),
                     text_org,
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
@@ -360,6 +359,15 @@ class Tracker:
                 )
 
         return frame, no_obstacle_detected, obstacle_free_center_x
+
+    def visualize_depth(self, depth_frame):
+        depth_normalized = cv2.normalize(depth_frame, None, 0, 255, cv2.NORM_MINMAX)
+        depth_normalized = np.uint8(depth_normalized)
+        depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
+        cv2.putText(
+            self.frame, str(self.seg), (5, 10), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0)
+        )
+        cv2.imshow("Depth Visualizer", depth_colored)
 
     def main_loop(self):
         fps, total_fps, avr_fps, fps_count, bkl, bkr = 0, 0, 0, 0, 0, 0
@@ -378,11 +386,11 @@ class Tracker:
                 _, frame = self.video_capture.read()
                 self.frame = cv2.flip(frame, 1)
             else:
-                frames = self.rs_pipeline.wait_for_frames()
-                frame = frames.get_color_frame()
-                frame = np.asanyarray(frame.get_data())
-                depth_frame = frames.get_depth_frame()
-                self.frame, no_obs, safe_x = self.process_obstacles(frame, depth_frame)
+                self.frame = np.copy(self.serial.color_image)
+                depth_frame = np.copy(self.serial.depth_image)
+                self.frame, no_obs, safe_x = self.process_obstacles(
+                    self.frame, depth_frame
+                )
 
             targets = self.detect_target()
             bkl = self.motor_power_l
@@ -402,24 +410,23 @@ class Tracker:
             ):
                 self.interval_serial_send_start_time = time.time()
 
-                if self.app.var_enable_tracking.get():
-                    if not self.stop:
-                        if bkl != self.motor_power_l:
-                            self.send((Commands.SET_SPD_LEFT, self.motor_power_l))
-                        if bkr != self.motor_power_r:
-                            self.send((Commands.SET_SPD_RIGHT, self.motor_power_r))
+                if self.app.var_enable_tracking.get() and not self.stop:
+                    if bkl != self.motor_power_l:
+                        self.send((Commands.SET_SPD_LEFT, self.motor_power_l))
+                    if bkr != self.motor_power_r:
+                        self.send((Commands.SET_SPD_RIGHT, self.motor_power_r))
 
-                        if target_position_str == "X":
-                            self.app.queue.add("g", "Target not found")
-                        else:
-                            self.app.queue.add(
-                                "g",
-                                "GO:{} | L:{}% R:{}%".format(
-                                    target_position_str,
-                                    self.motor_power_l,
-                                    self.motor_power_r,
-                                ),
-                            )
+                    if target_position_str == "X":
+                        self.app.queue.add("g", "Target not found")
+                    else:
+                        self.app.queue.add(
+                            "g",
+                            "GO:{} | L:{}% R:{}%".format(
+                                target_position_str,
+                                self.motor_power_l,
+                                self.motor_power_r,
+                            ),
+                        )
 
                 self.send(Commands.CHECK)
 
@@ -499,8 +506,6 @@ class Tracker:
 
         if DEBUG_USE_WEBCAM:
             self.video_capture.release()
-        else:
-            self.rs_pipeline.stop()
 
         cv2.destroyAllWindows()
 
@@ -508,8 +513,8 @@ class Tracker:
         print("[System] Starting up...")
         time_startup = time.time()
 
-        cascPath = cv2.data.haarcascades + Cascades.FACE
-        self.cascade = cv2.CascadeClassifier(cascPath)
+        casc_path = cv2.data.haarcascades + Cascades.FACE
+        self.cascade = cv2.CascadeClassifier(casc_path)
 
         if DEBUG_USE_WEBCAM:
             self.video_capture = cv2.VideoCapture(CAM_NO)
@@ -519,21 +524,8 @@ class Tracker:
             self.frame_width = self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)
             self.frame_height = self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
         else:
-            self.rs_pipeline = rs.pipeline()
-            self.rs_config = rs.config()
-            self.rs_config.enable_stream(
-                rs.stream.color, FRAME_WIDTH, FRAME_HEIGHT, rs.format.bgr8, 60
-            )
-            self.rs_config.enable_stream(
-                rs.stream.depth, FRAME_WIDTH, FRAME_HEIGHT, rs.format.z16, 60
-            )
-            self.rs_pipeline.start(self.rs_config)
-
-            profile = self.rs_pipeline.get_active_profile()
-            color_profile = rs.video_stream_profile(profile.get_stream(rs.stream.color))
-            color_intrinsics = color_profile.get_intrinsics()
-            self.frame_width = color_intrinsics.width
-            self.frame_height = color_intrinsics.height
+            self.frame_width = FRAME_WIDTH
+            self.frame_height = FRAME_HEIGHT
 
         self.frame = None
 

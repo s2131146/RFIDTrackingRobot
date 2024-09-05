@@ -1,10 +1,10 @@
 class Utils:
     @classmethod
-    def is_bool(str) -> bool:
+    def is_bool(cls, str) -> bool:
         return True if str == "True" or str == "False" else False
-    
+
     @classmethod
-    def try_to_bool(str) -> bool | str:
+    def try_to_bool(cls, str) -> bool | str:
         """文字列をBooleanに変換
 
         Args:
