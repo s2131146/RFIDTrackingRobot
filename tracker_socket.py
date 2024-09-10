@@ -172,13 +172,15 @@ class TrackerSocket:
                 return False
 
         self.data_id += 1
+        skip_log = True if data == "YO" else False
         if isinstance(data, tuple):
             data = "send:{}:{}:{}".format(self.data_id, data[0], data[1])
         else:
             data = "send:{}:{}".format(self.data_id, data.upper())
 
         self.command_sent = self.get_command(data).upper()
-        self.serial_sent = data
+        if not skip_log:
+            self.serial_sent = data
         data += "\n"
 
         try:

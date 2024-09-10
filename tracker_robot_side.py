@@ -35,7 +35,16 @@ class TrackerSocketRobot:
         parts = str(received).split(":")
         cmd = parts[0]
         cmd_id = parts[1]
-        data = (parts[2] if len(parts) > 1 else "").rstrip("\n")
+        remaining_parts = parts[2:]
+
+        if "\n" in remaining_parts[-1]:
+            last_part = remaining_parts[-1].strip()
+            remaining_parts[-1] = last_part
+
+        if len(remaining_parts) > 1:
+            data = tuple(remaining_parts)
+        else:
+            data = remaining_parts[0]
 
         if cmd == "connect":
             self.connect_socket()
@@ -51,7 +60,7 @@ class TrackerSocketRobot:
 
     def send_to_host(self, data, id=-1, cmd=None, wo=False):
         send_str = "{}:{}:{}".format(cmd if cmd is not None else "force", id, data)
-        pr("Sending: {}".format(send_str), wo)
+        pr("Send to client: {}".format(send_str), wo)
         try:
             send_data(send_str.encode())
         except socket.timeout:
@@ -75,7 +84,8 @@ class TrackerSocketRobot:
             self.com.open()
             self.com_connected = True
             self.send_to_host("Serial port connected")
-        except serial.SerialException:
+        except serial.SerialException as e:
+            pr(e)
             self.send_to_host("Serial port is not open")
         return self.com_connected
 
@@ -86,6 +96,9 @@ class TrackerSocketRobot:
             data = data.split(":")[0].upper()
 
         return data
+
+    def stop(self):
+        self.send_serial("stop")
 
     def send_serial(self, data) -> bool:
         """シリアル通信でコマンドを送信
@@ -106,6 +119,8 @@ class TrackerSocketRobot:
 
         self.command_sent = self.get_command(data).upper()
         self.serial_sent = data
+        if data != "YO":
+            pr(f"Send Serial: {data}")
         data += "\n"
 
         try:
@@ -230,6 +245,7 @@ def loop():
                 if tracker is not None:
                     tracker.on_receive(data)
     except ConnectionResetError:
+        tracker.stop()
         pr("Client disconnected")
     except Exception as e:
         pr("An error occurred: {}\n{}".format(e, traceback.format_exc()))
@@ -243,12 +259,14 @@ def main():
     while True:
         try:
             init()
-            pr("Loop started")
+            pr("Loop starting")
             loop()
         except KeyboardInterrupt:
+            tracker.stop()
             pr("Interrupted by user")
             break
         except Exception as e:
+            tracker.stop()
             pr(
                 "An error occurred in main loop: {}\n{}".format(
                     e, traceback.format_exc()
@@ -295,7 +313,7 @@ def init_cam():
 
 
 if __name__ == "__main__":
-    pr("RFID Human Tracker [Server side] 2024 Metoki.")
+    pr("RFID Human Tracker [Robot] 2024 Metoki.")
     pr("Starting...")
     s = time.time()
     cam_connected = init_cam()

@@ -19,7 +19,7 @@ import gui
 # シリアルポートの設定
 SERIAL_PORT = "COM3"
 SERIAL_BAUD = 19200
-SERIAL_SEND_INTERVAL = 0.1
+SERIAL_SEND_INTERVAL = 0.01
 
 TCP_PORT = 8001
 
@@ -108,7 +108,7 @@ class Tracker:
         Args:
             frame (MatLike): フレーム
         """
-        text = "SERIAL SENT."
+        text = f"SERIAL SENT {str(self.sent_count).zfill(2)}"
         text_y = math.floor(self.frame_height - 10)
         cv2.putText(
             self.frame, text, (5, text_y), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 0)
@@ -408,6 +408,7 @@ class Tracker:
                 time.time() - self.interval_serial_send_start_time
                 > SERIAL_SEND_INTERVAL
             ):
+                self.sent_count += 1
                 self.interval_serial_send_start_time = time.time()
 
                 if self.app.var_enable_tracking.get() and not self.stop:
@@ -428,7 +429,11 @@ class Tracker:
                             ),
                         )
 
-                self.send(Commands.CHECK)
+                    self.send(Commands.CHECK)
+
+            if time.time() - self.send_check_start_time > 1:
+                self.sent_count = 0
+                self.send_check_start_time = time.time()
 
             received = self.serial.get_received_queue()
             if received:
@@ -466,7 +471,7 @@ class Tracker:
             debug_text = (
                 "{} {} x {} {} x: {} y: {} avr_fps: {} fps: {} target_position: {}\n"
                 "target_x: {} self.motor_power_l: {} self.motor_power_r: {}\n"
-                "socket_connected: {} port: {} baud: {} data: {}\n"
+                "connected: {} port: {} baud: {} data: {}\n"
                 "STOP: {} serial_received: {}\n"
                 "obstacle_detected: {} safe_x: {}".format(
                     self.seg,
@@ -536,8 +541,10 @@ class Tracker:
         self.motor_power_l, self.motor_power_r = 0, 0
 
         self.interval_serial_send_start_time = 0
+        self.send_check_start_time = 0
 
         self.seg = 0
+        self.sent_count = 0
 
         print(
             "[System] Startup completed. Elapsed time:", self.elapsed_str(time_startup)
