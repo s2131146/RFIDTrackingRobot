@@ -4,9 +4,13 @@ import socket
 import traceback
 import tqueue
 import asyncio
-from utils import Utils
 import numpy as np
 import cv2
+import logger as l
+from utils import Utils
+from constants import Commands
+
+logger = l.logger
 
 
 class TrackerSocket:
@@ -30,7 +34,9 @@ class TrackerSocket:
             ip_address = socket.gethostbyname(hostname)
             return ip_address
         except socket.error as e:
-            print("[Socket] An error occured during getting local IP: {}".format(e))
+            logger.error(
+                "[Socket] An error occured during getting local IP: {}".format(e)
+            )
             return None
 
     def test_connect(self):
@@ -41,11 +47,6 @@ class TrackerSocket:
             test.close()
             return True
         except socket.error:
-            print(
-                "[Socket] An error occured at connect_socket: {}".format(
-                    traceback.format_exc()
-                )
-            )
             return False
 
     ser_connected = False
@@ -57,7 +58,7 @@ class TrackerSocket:
             bool: 接続結果
         """
         if self.tcp_ip is None:
-            print("[Socket] IP Address is not defined.")
+            logger.error("[Socket] IP Address is not defined.")
             self.ser_connected = False
             return
         try:
@@ -69,10 +70,10 @@ class TrackerSocket:
                 self.client_socket, (self.tcp_ip, self.tcp_port)
             )
             self.ser_connected = True
-            print("[Socket] Socket connected.")
+            logger.info("[Socket] Socket connected.")
             self.send_startup()
         except socket.error as e:
-            print("[Socket] An error occured at connect_socket: {}".format(e))
+            logger.error("[Socket] An error occured at connect_socket: {}".format(e))
             self.ser_connected = False
         return self.ser_connected
 
@@ -101,18 +102,18 @@ class TrackerSocket:
 
     def exec_data(self, data):
         data = data.decode()
-        parts = data.split(":")
+        parts = data.split(":", 2)
         cmd = parts[0]
         if len(parts) > 1:
             cid = parts[1]
             value = parts[2]
             value_bool = Utils.try_to_bool(value)
+            if not isinstance(value_bool, bool):
+                self.queue.add("r", value)
             if cmd == "force":
-                print(value)
-                self.queue.add("r", value)
-            if cmd == "print":
-                self.print_serial(value)
-                self.queue.add("r", value)
+                logger.info(value)
+            if cmd == "logger.info":
+                self.logger.info_serial(value)
             if cid != -1 and self.queue.get("w:{}".format(cid)) is not None:
                 self.queue.add(cid, value_bool)
 
@@ -128,7 +129,7 @@ class TrackerSocket:
 
                 self.process_data(data)
             except Exception:
-                print(
+                logger.error(
                     "[Socket] An error occured at loop_serial: {}".format(
                         traceback.format_exc()
                     )
@@ -143,7 +144,7 @@ class TrackerSocket:
 
     def wait_for_result(self, data, id):
         if not self.ser_connected:
-            print("[Socket] Not connected. Cannot start loop_serial.")
+            logger.error("[Socket] Not connected. Cannot start loop_serial.")
             return
         fid = "w:{}".format(id)
         self.queue.add(fid)
@@ -171,28 +172,39 @@ class TrackerSocket:
                 asyncio.run(self.connect_socket())
                 return False
 
+        if self.data_id > 99999:
+            self.data_id = 0
+
         self.data_id += 1
-        skip_log = True if data == "YO" else False
+        skip_log = True if Commands.is_ignore(data) else False
         if isinstance(data, tuple):
+            cmd = data[0].upper()
             data = "send:{}:{}:{}".format(self.data_id, data[0], data[1])
         else:
+            cmd = data.upper()
             data = "send:{}:{}".format(self.data_id, data.upper())
 
-        self.command_sent = self.get_command(data).upper()
+        self.command_sent = self.get_command(cmd).upper()
         if not skip_log:
             self.serial_sent = data
         data += "\n"
 
         try:
-            res = self.wait_for_result(data, self.data_id)
+            if skip_log:
+                self.send_data(data)
+                return True
+            else:
+                res = self.wait_for_result(data, self.data_id)
+                if data == "STOP":
+                    logger.info(res)
             if res is None:
-                print("[Socket] No connection now")
+                logger.error("[Socket] No connection now")
                 self.ser_connected = False
             return True
         except socket.error as e:
             self.ser_connected = False
             if self.debug:
-                print("[Socket] Failed to send to client: {}".format(e))
+                logger.error("[Socket] Failed to send to client: {}".format(e))
             return False
 
     def get_command(self, data):
@@ -216,7 +228,7 @@ class TrackerSocket:
     def print_serial(self, received):
         """Arduinoからのシリアル通信の内容を出力"""
         if self.debug:
-            print("[Serial] {}".format(received))
+            logger.info("[Serial] {}".format(received))
 
     color_image, depth_image = (
         np.ones((480, 640, 3), dtype=np.uint8) * 255,
@@ -229,7 +241,7 @@ class TrackerSocket:
             or self.client_socket is None
             or not self.ser_connected
         ):
-            print("[Socket] client_socket is not initialized.")
+            logger.error("[Socket] client_socket is not initialized.")
             return
 
         try:
@@ -240,7 +252,7 @@ class TrackerSocket:
                 nparr = np.frombuffer(data, np.uint16)
                 self.depth_image = nparr.reshape((480, 640))
         except Exception as e:
-            print(f"[Socket] Error in make_images: {e}")
+            logger.error(f"[Socket] Error in make_images: {e}")
 
     def close(self):
         self.send_data("close:")

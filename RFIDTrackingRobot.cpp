@@ -174,6 +174,7 @@ void executeCommand(String cmdStr) {
     }
     if (command == "L") {
         setWheelSpeed(i_value, -1);
+        digitalWrite(LED_BUILTIN, HIGH);
     }
     if (command == "R") {
         setWheelSpeed(-1, i_value);
@@ -186,7 +187,7 @@ void executeCommand(String cmdStr) {
         dirR = i_value;
         setWheelSpeed(-1, -1, true);
     }
-    if (command == "STOP") {
+    if (command == "STOP" || command == "STMP") {
         setWheelSpeed(0, 0);
     }
     if (command == "CONNECT_WHEEL") {

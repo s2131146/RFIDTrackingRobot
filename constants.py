@@ -1,19 +1,42 @@
 from dataclasses import dataclass
+from typing import ClassVar, Set
+
 
 @dataclass(frozen=True)
-class Commands():
-    STOP = "STOP"
-    START = "START"
-    SET_SPD_LEFT = "L"
-    SET_SPD_RIGHT = "R"
-    CHECK = "YO"
+class Commands:
+    STOP: ClassVar[str] = "STOP"
+    START: ClassVar[str] = "START"
+    SET_SPD_LEFT: ClassVar[str] = "L"
+    SET_SPD_RIGHT: ClassVar[str] = "R"
+    CHECK: ClassVar[str] = "YO"
+    STOP_TEMP: ClassVar[str] = "STMP"
+
+    IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK}
+
+    @classmethod
+    def is_ignore(cls, cmd: str) -> bool:
+        """
+        指定されたコマンドが無視リストに含まれているかを判定します。
+
+        Args:
+            cmd (str): 判定対象のコマンド文字列。
+
+        Returns:
+            bool: コマンドが無視リストに含まれていればTrue、そうでなければFalse。
+        """
+        return cmd in cls.IGNORE_LOG
 
     @classmethod
     def contains(cls, key):
-        return any(key == value for attr, value in cls.__dict__.items() if not attr.startswith('__'))
-    
+        return any(
+            key == value
+            for attr, value in cls.__dict__.items()
+            if not attr.startswith("__")
+        )
+
+
 @dataclass(frozen=True)
-class Cascades():
+class Cascades:
     FACE = "haarcascade_frontalface_default.xml"
     LOWER_BODY = "haarcascade_lowerbody.xml"
     UPPER_BODY = "haarcascade_upperbody.xml"

@@ -134,7 +134,7 @@ class TrackerSocketRobot:
     def print_serial(self):
         """Arduinoからのシリアル通信の内容を出力"""
         try:
-            if self.com.in_waiting > 0:
+            if isinstance(self.com, serial.Serial) and self.com.in_waiting > 0:
                 res = self.com.readline().decode("utf-8", "ignore").strip()
                 self.send_to_host("Received: {}".format(res))
                 return True, res
@@ -215,7 +215,7 @@ def send_data(data):
 def receive_data():
     data_buffer = b""
     while True:
-        chunk = client_socket.recv(4096)
+        chunk = client_socket.recv(32)
         if not chunk:
             break
         data_buffer += chunk
@@ -244,6 +244,11 @@ def loop():
             else:
                 if tracker is not None:
                     tracker.on_receive(data)
+            res, ret = tracker.print_serial()
+            if res:
+                pr(f"Arduino: {ret}")
+                response = ret if res else "NULL"
+                tracker.send_to_host(response, -1, "print", True)
     except ConnectionResetError:
         tracker.stop()
         pr("Client disconnected")
