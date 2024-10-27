@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import scrolledtext as st
 from PIL import Image, ImageTk
+from tracker import Tracker
 
 DEF_MARGIN = 12
 STICKY_UP = "n"
@@ -13,11 +14,11 @@ STICKY_LEFT = "w"
 STICKY_RIGHT = "e"
 
 
-class App:
+class GUI:
     queue = tqueue.TQueue()
     timeline_index = 0
 
-    def __init__(self, _tracker, root):
+    def __init__(self, _tracker: Tracker, root: tk.Tk):
         self.tracker = _tracker
         self.root = root
         self.root.title("Metoki - RFID Tracking Robot")
@@ -31,6 +32,9 @@ class App:
         self.motor_left_var = tk.StringVar(value="0%")
         self.motor_right_var = tk.StringVar(value="0%")
 
+        # モード選択用のStringVarを初期化
+        self.mode_var = tk.StringVar(value=Tracker.Mode.CAM_ONLY.name)
+
         # 自動スクロールの変数を初期化
         self.var_auto_scroll_received = tk.IntVar(value=1)
         self.var_auto_scroll_sent = tk.IntVar(value=1)
@@ -39,6 +43,8 @@ class App:
         self.create_control_frame()
 
         self.update_stop()
+
+        self.queue.add("init")
 
     def create_main_frame(self):
         self.main_frame = tk.Frame(self.root)
@@ -78,7 +84,7 @@ class App:
         self.rfid_frame = tk.Frame(self.bottom_frame)
         self.rfid_frame.grid(row=1, column=0, padx=(0, 0), pady=0, sticky=STICKY_CENTER)
 
-        self.rfid_values = [tk.StringVar(value="0%") for _ in range(4)]
+        self.rfid_values = [tk.StringVar(value="0") for _ in range(4)]
         self.rfid_canvases = []
         self.rfid_text_ids = []
         self.rfid_rect_ids = []  # 四角形のIDを保存するリスト
@@ -141,8 +147,8 @@ class App:
                 self.motor_frame, width=50, height=50, highlightthickness=0
             )
             canvas.grid(
-                row=0, column=i + 0, padx=20, pady=0
-            )  # 中央に配置するための padx を増やす
+                row=0, column=i, padx=20, pady=0  # 中央に配置するための padx を増やす
+            )
 
             rect_id = self.draw_rounded_rectangle(
                 canvas, 5, 5, 45, 45, radius=10, fill="white", outline="black"
@@ -243,22 +249,48 @@ class App:
         self.create_status_frame()
 
     def create_command_entry(self):
+        # Mode選択用のラベルとドロップダウンメニューを追加
+        self.mode_label = tk.Label(self.command_frame, text="Mode:")
+        self.mode_label.grid(row=0, column=0, padx=0, pady=(0, 5), sticky=STICKY_LEFT)
+
+        self.mode_options = ["CAM_ONLY", "DUAL", "RFID_ONLY"]
+        self.mode_menu = ttk.OptionMenu(
+            self.command_frame,
+            self.mode_var,
+            self.mode_var.get(),
+            *self.mode_options,
+            command=self.mode_selected,  # 選択時に呼び出されるメソッド
+        )
+        self.mode_menu.grid(
+            row=0, column=1, padx=DEF_MARGIN, pady=(0, 5), sticky=STICKY_LEFT
+        )
+
+        # Commandラベルとエントリーの位置を下にずらす
         self.command_label = tk.Label(self.command_frame, text="Command:")
-        self.command_label.grid(row=0, column=0, padx=0, pady=0, sticky=STICKY_LEFT)
+        self.command_label.grid(row=1, column=0, padx=0, pady=0, sticky=STICKY_LEFT)
 
         self.command_entry = tk.Entry(self.command_frame, width=25)
-        self.command_entry.grid(row=0, column=1, padx=DEF_MARGIN, pady=5)
+        self.command_entry.grid(row=1, column=1, padx=DEF_MARGIN, pady=5)
         self.command_entry.bind("<Return>", self.command_enter_pressed)
         self.command_entry.focus_set()
 
         self.send_button = ttk.Button(
             self.command_frame, text="Send", command=self.send_command
         )
-        self.send_button.grid(row=0, column=2, padx=0, pady=5)
+        self.send_button.grid(row=1, column=2, padx=0, pady=5)
+
+    def mode_selected(self, selected_mode):
+        """モードが選択された際に呼び出されるメソッド"""
+        self.update_status(f"Mode selected: {selected_mode}")
+        self.tracker.update_mode()
 
     def create_scrolled_text(self):
+        # 受信テキストと送信テキストのスコールドテキストウィジェットを作成
         self.received_text = self.create_scrolled_widget(
-            self.control_frame, "AutoScroll", self.var_auto_scroll_received, 1
+            self.control_frame,
+            "AutoScroll",
+            self.var_auto_scroll_received,
+            row=1,
         )
         self.label_received = tk.Label(
             self.control_frame,
@@ -268,11 +300,11 @@ class App:
             font=self.custom_font,
         )
         self.label_received.grid(
-            row=2, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT
+            row=3, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT
         )
 
         self.sent_text = self.create_scrolled_widget(
-            self.control_frame, "AutoScroll", self.var_auto_scroll_sent, 3
+            self.control_frame, "AutoScroll", self.var_auto_scroll_sent, row=4
         )
         self.label_sent = tk.Label(
             self.control_frame,
@@ -282,7 +314,7 @@ class App:
             font=self.custom_font,
         )
         self.label_sent.grid(
-            row=4, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT
+            row=7, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT
         )
 
     def create_scrolled_widget(self, frame, label_text, var_auto_scroll, row):
@@ -301,7 +333,7 @@ class App:
     def create_status_frame(self):
         self.status_frame = tk.Frame(self.control_frame)
         self.status_frame.grid(
-            row=6, column=0, padx=DEF_MARGIN, pady=0, sticky=STICKY_CENTER
+            row=8, column=0, padx=DEF_MARGIN, pady=0, sticky=STICKY_CENTER
         )
         self.status_frame.grid_columnconfigure(0, weight=1)
         self.status_frame.grid_columnconfigure(1, weight=1)
@@ -371,7 +403,7 @@ class App:
             command=self.command_stop_start,
         )
         self.stop_button.grid(
-            row=5, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_CENTER
+            row=6, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_CENTER
         )
         self.stop_button.config(padx=20, pady=5)
 
@@ -428,19 +460,29 @@ class App:
         elif key == "r" and self.var_auto_scroll_received.get():
             text_widget.see(tk.END)
 
-    def update_rfid_values(self, values):
-        for i in range(4):
-            value = values[i]
-            if i == 0:
-                self.rfid_values[i].set(f"{value}%")
-                canvas = self.rfid_canvases[i]
-                rect_id = self.rfid_rect_ids[i]
-                canvas.itemconfig(rect_id, fill="white")
+    def update_rfid_values(self, counts):
+        """各アンテナの検出回数を更新します。
+
+        Args:
+            counts (dict): 各アンテナの検出回数
+        """
+        # アンテナの順序に基づいて更新
+        antenna_order = ["CENTER", "LEFT", "RIGHT", "REAR"]
+        for i, antenna in enumerate(antenna_order):
+            count = counts.get(i + 1, 0)
+            self.rfid_values[i].set(str(count))
+            canvas = self.rfid_canvases[i]
+            rect_id = self.rfid_rect_ids[i]
+
+            # 検出回数に応じて色を変更
+            if count == 0:
+                color = "white"
             else:
-                self.rfid_values[i].set("-%")
-                canvas = self.rfid_canvases[i]
-                rect_id = self.rfid_rect_ids[i]
-                canvas.itemconfig(rect_id, fill="red")
+                max_count = 12
+                green_intensity = min(255, int((count / max_count) * 255))
+                color = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
+
+            canvas.itemconfig(rect_id, fill=color)
 
     def update_motor_values(self, left_value, right_value):
         """モーターの速度を更新します。

@@ -1,3 +1,12 @@
+import threading
+
+
+class Empty(Exception):
+    """キューが空であることを示す例外"""
+
+    pass
+
+
 class TQueue:
     queue: list = []
 
@@ -10,8 +19,8 @@ class TQueue:
 
     def get(self, id):
         if not self.has(id):
-            return None   
-         
+            return None
+
         ret = ""
         found = False
         filtered_data = []
@@ -21,16 +30,16 @@ class TQueue:
                 found = True
             else:
                 filtered_data.append(item)
-        
+
         self.queue.clear()
         self.queue = filtered_data
 
         return ret
-    
+
     def get_all(self, id):
         if not self.has(id):
-            return None   
-         
+            return None
+
         ret = []
         filtered_data = []
         for item in self.queue:
@@ -38,14 +47,27 @@ class TQueue:
                 ret.append(item[1])
             else:
                 filtered_data.append(item)
-        
+
         self.queue.clear()
         self.queue = filtered_data
 
         return ret
-        
+
     def has(self, id):
         if len(self.queue) == 0:
             return False
-        
+
         return any(q[0] == id for q in self.queue)
+
+    def wait_for(self, id):
+        while not self.has(id):
+            pass
+        self.get(id)
+
+    def empty(self):
+        return len(self.queue) == 0
+
+    def get_nowait(self):
+        if self.empty():
+            raise Empty
+        return self.queue.pop(0)

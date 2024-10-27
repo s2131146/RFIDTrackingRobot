@@ -1,29 +1,32 @@
 import os
 import threading
-
-# カメラ起動高速化
-os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
-
 import cv2
 import time
 import math
 import tkinter as tk
 import numpy as np
 import asyncio
-
-from scipy.cluster.hierarchy import fclusterdata
+from enum import Enum
 
 from constants import Commands
-from constants import Cascades
 from rfid import RFIDReader
 import tracker_socket as ts
 import gui
 import logger as l
 
+from obstacles import Obstacles
+from target_processor import TargetProcessor
+
+# カメラ起動高速化
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+
+from ultralytics import YOLO
+
 # シリアルポートの設定
 SERIAL_PORT = "COM3"
 SERIAL_BAUD = 19200
 SERIAL_SEND_INTERVAL = 0.03
+SERIAL_SEND_MOTOR_INTERVAL = 0.5
 
 TCP_PORT = 8001
 
@@ -35,24 +38,121 @@ CAM_NO = 0
 
 DEBUG_SERIAL = True
 DEBUG_USE_WEBCAM = False
+DEBUG_DETECT_OBSTACLES = True
+
+# Cascade 関連のフラグとリストを削除
 
 logger = l.logger
 
 
 class Tracker:
-    """申し訳ないレベルのグローバル変数"""
+    """Trackerクラス: 人物検出と距離推定（画像面積ベース）、モーター制御を行う"""
 
-    root = app = cascade = video_capture = None
-    frame_width = frame_height = d_x = d_y = face_x = face_center_x = None
-    max_motor_power_threshold = motor_power_l = motor_power_r = None
-    interval_serial_send_start_time = seg = serial_sent = None
+    # 動作モード
+    class Mode(Enum):
+        CAM_ONLY = 1
+        DUAL = 2
+        RFID_ONLY = 3
 
-    serial = ts.TrackerSocket(
-        SERIAL_PORT, SERIAL_BAUD, SERIAL_SEND_INTERVAL, DEBUG_SERIAL, TCP_PORT
-    )
+    def __init__(self):
+        self.root = self.video_capture = None
+        self.frame_width = FRAME_WIDTH
+        self.frame_height = FRAME_HEIGHT
+        self.d_x = self.d_y = self.face_x = self.face_center_x = 0
+        self.max_motor_power_threshold = self.motor_power_l = self.motor_power_r = 0
+        self.interval_serial_send_start_time = self.seg = self.serial_sent = 0
+        self.rfid_accessing = False
+        self.rfid_reader = None
+        self.lost_target_command = Commands.STOP_TEMP
+        self.stop_exec_cmd = False
 
-    stop = False
-    target_last_seen_time = None  # 対象が最後に検出された時刻
+        self.default_speed = 250
+        self._def_spd_bk = 0
+
+        self.gui: gui.GUI
+
+        self.serial = ts.TrackerSocket(
+            SERIAL_PORT,
+            SERIAL_BAUD,
+            SERIAL_SEND_INTERVAL,
+            DEBUG_SERIAL,
+            TCP_PORT,
+            DEBUG_USE_WEBCAM,
+        )
+
+        self.stop = False
+        self.target_last_seen_time = None  # 対象が最後に検出された時刻
+
+        # 自動停止の距離閾値（占有率）
+        self.AUTO_STOP_OCCUPANCY_RATIO = 0.6  # 60%
+
+        # 近接の閾値（占有率）
+        self.CLOSE_OCCUPANCY_RATIO = 0.5  # 40%以上で「近い」と判断
+
+        # モーター出力の最低限の値（対象が近くない場合）
+        self.MIN_MOTOR_POWER = 80  # 80%
+
+        # 自動停止状態を管理するフラグ
+        self.auto_stop = False
+
+        self.RFID_ENABLED = False
+        self.RFID_ONLY_MODE = True
+
+        # YOLOモデルのロード
+        self.model = YOLO("models\\yolov8n.pt")
+
+        # 障害物検出クラスのインスタンス作成
+        self.obstacles = Obstacles(FRAME_WIDTH, FRAME_HEIGHT, logger)
+
+        # 対象検出クラスのインスタンス作成
+        self.target_processor = TargetProcessor(
+            FRAME_WIDTH, FRAME_HEIGHT, self.model, logger, self
+        )
+
+        self.stop_temp = False
+        self.detected_obstacles = []
+        self.occupancy_ratio = 0
+        self.is_close = False
+
+        self.target_position_str = "X"
+        self.target_x = 0
+        self.safe_x = 0
+
+        self.received_serial = None
+        self.disconnect = False
+
+        self.fps = 0
+        self.total_fps = 0
+        self.avr_fps = 0
+        self.fps_count = 0
+        self.bkl = 0
+        self.bkr = 0
+
+        self.send_check_start_time = 0
+        self.sent_count = 0
+
+        self.initialized = False
+        self.first_disable_tracking = True
+
+    def update_mode(self):
+        self.init()
+
+    def set_mode(self, mode):
+        self.mode = mode
+        logger.info(f"Mode set to {self.mode}")
+
+        if self.mode == self.Mode.CAM_ONLY.name:
+            self.RFID_ENABLED = False
+            self.RFID_ONLY_MODE = False
+            self.default_speed = 250
+        elif self.mode == self.Mode.DUAL.name:
+            self.RFID_ENABLED = True
+            self.RFID_ONLY_MODE = False
+            self.default_speed = 250
+        elif self.mode == self.Mode.RFID_ONLY.name:
+            self.RFID_ONLY_MODE = True
+            self.RFID_ENABLED = True
+            self.default_speed = 100
 
     def elapsed_str(self, start_time):
         """経過時間の文字列を取得
@@ -69,7 +169,6 @@ class Tracker:
         """デバッグ用画面出力
 
         Args:
-            frame (MatLike): フレーム
             text (str): 出力文字列
         """
         text_lines = text.split("\n")
@@ -146,29 +245,28 @@ class Tracker:
         bottom_right = (text_x + text_size[0] + padding, text_y + padding)
         cv2.rectangle(self.frame, top_left, bottom_right, (0, 255, 255), thickness)
 
-    def detect_target(self):
-        """画像から対象を検出
-
-        Args:
-            frame (MatLike): フレーム
-
-        Returns:
-            Sequence[Rect]: 座標情報
-        """
-        gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-        target = self.cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30),
-            flags=cv2.CASCADE_SCALE_IMAGE,
-        )
-        return target
-
     def send(self, data):
+        if isinstance(data, tuple):
+            command, value = data
+            data = f"{command}:{value}"
+
         if not Commands.contains(self.serial.get_command(data)):
             logger.warning(f"Invalid command: {data}")
             return False
+
+        if data == Commands.START:
+            return True
+
+        if (
+            self.prev_command == data
+            and data != Commands.CHECK
+            and data != Commands.STOP
+            and data != Commands.STOP_TEMP
+        ):
+            return True
+
+        if data != Commands.CHECK:
+            self.prev_command = data
 
         ret = self.serial.send_serial(data)
         if ret:
@@ -176,7 +274,7 @@ class Tracker:
         self.exec_sent_command()
 
         if not Commands.is_ignore(data):
-            self.app.queue.add("s", self.serial.serial_sent)
+            self.gui.queue.add("s", self.serial.serial_sent)
 
         return True
 
@@ -184,138 +282,82 @@ class Tracker:
         c = self.serial.command_sent.upper()
         if c == Commands.STOP:
             self.stop = True
-            self.app.update_stop()
+            self.gui.update_stop()
             logger.info("Motor stopped")
-        if c == Commands.START:
+        elif c == Commands.START:
             self.start_motor()
             logger.info("Motor started")
+        elif c == Commands.STOP_TEMP:
+            self.stop_temp = True
 
-    def calculate_motor_power(self, target_x):
+    def calculate_motor_power(self, target_x, obs=False):
         """モーター出力を計算
 
         Args:
             target_x (int): 対象座標X
+            obs (bool): 障害物検知のフラグ
         """
-        if target_x < 0:
-            self.motor_power_l = math.floor(math.sqrt(-target_x))
-            self.motor_power_r = math.floor(math.sqrt(-(target_x * 4)))
-            self.motor_power_l -= self.motor_power_r
+        # 定義された占有率と対応する基礎速度のポイント
+        # 占有率: 0% -> 100%, 15% -> 100%, 40% -> 80%, 60% -> 60%, 100% -> 0%
+        occupancy_thresholds = [0.0, 0.15, 0.40, 0.60, 1.0]
+        base_speeds = [100, 100, 80, 60, 0]
+
+        occupancy = self.occupancy_ratio
+
+        # 線形補間を使用して基礎速度を計算
+        base_speed = np.interp(occupancy, occupancy_thresholds, base_speeds)
+
+        # 速度をクランプ（0%〜100%）
+        base_speed = max(0, min(100, base_speed))
+
+        # 中央15%の閾値
+        central_threshold = 0.15 * self.frame_width
+
+        if abs(target_x) <= central_threshold:
+            # 中央15%以内に対象がいる場合、モーター出力を基礎速度に設定
+            self.motor_power_l = base_speed
+            self.motor_power_r = base_speed
         else:
-            self.motor_power_l = math.floor(math.sqrt(target_x * 4))
-            self.motor_power_r = math.floor(math.sqrt(target_x))
-            self.motor_power_r -= self.motor_power_l
+            # 中央15%を超える場合、対象の位置に基づいてモーター出力を調整
+            # フレームの半幅
+            half_width = self.frame_width / 2
 
-        self.motor_power_l += 70
-        self.motor_power_r += 70
+            # ターゲットの位置を正規化（-1.0 ~ 1.0）
+            normalized_error = target_x / (0.85 * half_width)  # 0.85は調整可能
 
-        if self.motor_power_l > 100:
-            self.motor_power_l = 100
-        if self.motor_power_r > 100:
-            self.motor_power_r = 100
+            # -1.0 ~ 1.0 にクランプ
+            normalized_error = max(-1.0, min(1.0, normalized_error))
+
+            # 方向調整の強さを設定（0〜100）
+            steer_strength = 50  # 調整可能
+
+            if normalized_error < 0:
+                # 左に曲がる場合
+                self.motor_power_l = max(
+                    0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                )
+                self.motor_power_r = max(
+                    0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                )
+            elif normalized_error > 0:
+                # 右に曲がる場合
+                self.motor_power_r = max(
+                    0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                )
+                self.motor_power_l = max(
+                    0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                )
+            else:
+                # 中央の場合
+                self.motor_power_l = base_speed
+                self.motor_power_r = base_speed
+
+        # 障害物が検出された場合、再帰的にモーター出力を調整
+        if not self.no_obs and not obs:
+            self.calculate_motor_power(-self.safe_x, obs=True)
 
     def get_target_pos_str(self, target_center_x):
-        """対象のいる位置を文字列で取得
-
-        Args:
-            target_center_x (int): 対象のX座標
-
-        Returns:
-            str: 結果
-        """
-        if target_center_x < self.frame_width // 3:
-            target_position_str = "LEFT"
-        elif target_center_x < 2 * self.frame_width // 3:
-            target_position_str = "CENTER"
-        else:
-            target_position_str = "RIGHT"
-
-        return target_position_str
-
-    def calculate_motor_power_with_distance(self, target_x, distance):
-        """モーター出力を距離に基づいて計算します。
-
-        Args:
-            target_x (int): 対象のX座標
-            distance (int): 対象までの距離 (mm)
-        """
-        # 距離に応じた速度係数を設定
-        if distance is not None:
-            if distance > 300:
-                speed_factor = 1.0  # 最大速度
-            elif distance > 200:
-                speed_factor = 0.7  # 速度70%
-            elif distance > 100:
-                speed_factor = 0.4  # 速度40%
-            else:
-                speed_factor = 0.0  # 停止
-        else:
-            speed_factor = 1.0  # デフォルト
-
-        # 既存のターゲットXに基づくモーター出力計算
-        self.calculate_motor_power(target_x)
-
-        # 速度係数を適用
-        self.motor_power_l = int(self.motor_power_l * speed_factor)
-        self.motor_power_r = int(self.motor_power_r * speed_factor)
-
-        # モーター出力の下限を0に設定
-        self.motor_power_l = max(self.motor_power_l, 0)
-        self.motor_power_r = max(self.motor_power_r, 0)
-
-        if speed_factor == 0.0:
-            self.stop_motor(True)
-        else:
-            self.send_commands_if_needed()
-
-    def process_target(self, target):
-        """画像中の対象を囲み、中心座標と距離を取得
-
-        Args:
-            target (Sequence[Rect]): 座標情報
-
-        Returns:
-            target_center_x, target_x, distance: 顔座標原点X, 顔座標X, 距離
-        """
-        for x, y, w, h in target:
-            self.d_x = x
-            self.d_y = y
-            self.target_detected = True
-
-            target_center_x = x + w // 2
-            target_x = math.floor(target_center_x - self.frame_width / 2)
-
-            # 深度画像から対象の距離を取得
-            if hasattr(self, "depth_frame") and self.depth_frame is not None:
-                depth_pixels = self.depth_frame[y : y + h, x : x + w]
-                if depth_pixels.size > 0:
-                    # ノイズを減らすために中央値を使用
-                    median_depth = int(np.median(depth_pixels))
-                else:
-                    median_depth = None
-            else:
-                median_depth = None
-
-            # 対象を矩形で囲む
-            cv2.rectangle(self.frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-            text_org = (x, y - 10)
-            if median_depth is not None:
-                distance_text = f"{median_depth}mm"
-            else:
-                distance_text = ""
-            cv2.putText(
-                self.frame,
-                f"TARGET {distance_text}",
-                text_org,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                1,
-            )
-
-            return target_center_x, target_x, median_depth
-
-        return None, None, None
+        return self.target_processor.get_target_pos_str(target_center_x)
 
     def stop_motor(self, no_target=False):
         if no_target:
@@ -326,175 +368,26 @@ class Tracker:
     def start_motor(self):
         if self.serial.ser_connected:
             self.stop = False
-            self.app.update_stop()
-
-    detected_obstacles = []
-
-    def process_obstacles(self, frame, depth_image):
-        """障害物を検知し、描画
-
-        Args:
-            frame (MatLike): フレーム
-            depth_image: 深度フレーム
-
-        Returns:
-            frame, no_obstacle_detected, obstacle_free_center_x: 描画後フレーム, 障害物がないか, 安全なX座標
-        """
-        roi_depth, roi_color = self.get_roi(frame, depth_image)
-        roi_depth_blurred = self.preprocess_depth(roi_depth)
-        obstacle_image = self.create_obstacle_mask(roi_depth_blurred)
-        obstacle_image_processed = self.apply_morphology(obstacle_image)
-        contours = self.find_obstacle_contours(obstacle_image_processed)
-
-        center_x = roi_color.shape[1] // 2
-
-        no_obstacle_detected, obstacle_free_center_x = self.process_contours(
-            contours, roi_color, center_x
-        )
-        return frame, no_obstacle_detected, obstacle_free_center_x
-
-    def process_contours(self, contours, roi_color, center_x):
-        """輪郭を処理して情報を取得する関数"""
-        no_obstacle_detected = True
-        detected_obstacles_info = []
-
-        # 各輪郭のバウンディングボックスを取得
-        bounding_boxes = []
-        for contour in contours:
-            if cv2.contourArea(contour) > 1500:
-                x, y, w, h = cv2.boundingRect(contour)
-                bounding_boxes.append([x, y, x + w, y + h])
-
-        # バウンディングボックスを近いもの同士で統合
-        bounding_boxes = self.combine_close_bounding_boxes(bounding_boxes)
-
-        for box in bounding_boxes:
-            x1, y1, x2, y2 = box
-            w = x2 - x1
-            h = y2 - y1
-
-            obstacle_center_x = x1 + w // 2
-            distance_to_center = obstacle_center_x - center_x
-
-            detected_obstacles_info.append((x1, y1, w, h, distance_to_center))
-            no_obstacle_detected = False
-
-            # 障害物を描画
-            cv2.rectangle(roi_color, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            text_org = (x1, y1 - 10)
-            cv2.putText(
-                roi_color,
-                "OBSTACLE X:{}".format(distance_to_center),
-                text_org,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 255),
-                1,
-            )
-
-        # 障害物のX座標を計算
-        if detected_obstacles_info:
-            all_obstacle_x_positions = [
-                info[0] + info[2] // 2 for info in detected_obstacles_info
-            ]
-            min_obstacle_x = min(all_obstacle_x_positions)
-            max_obstacle_x = max(all_obstacle_x_positions)
-            obstacle_free_center_x = (min_obstacle_x + max_obstacle_x) // 2
-        else:
-            obstacle_free_center_x = center_x
-
-        obstacle_free_center_x = math.floor(
-            obstacle_free_center_x - self.frame_width / 2
-        )
-
-        return no_obstacle_detected, obstacle_free_center_x
-
-    def combine_close_bounding_boxes(self, boxes, distance_threshold=50):
-        """近接するバウンディングボックスを統合します。
-
-        Args:
-            boxes (List[List[int]]): バウンディングボックスのリスト
-            distance_threshold (int): ボックス間の最大距離
-
-        Returns:
-            List[List[int]]: 統合後のバウンディングボックスのリスト
-        """
-        if not boxes:
-            return []
-
-        # ボックスの中心点を計算
-        centers = np.array(
-            [[(box[0] + box[2]) / 2, (box[1] + box[3]) / 2] for box in boxes]
-        )
-
-        # クラスタリングによって近いボックスをグループ化
-        if len(centers) == 1:
-            clusters = np.array([1])
-        else:
-            clusters = fclusterdata(centers, t=distance_threshold, criterion="distance")
-
-        combined_boxes = []
-        for cluster_id in np.unique(clusters):
-            cluster_boxes = [
-                boxes[i] for i in range(len(boxes)) if clusters[i] == cluster_id
-            ]
-            x1 = min([box[0] for box in cluster_boxes])
-            y1 = min([box[1] for box in cluster_boxes])
-            x2 = max([box[2] for box in cluster_boxes])
-            y2 = max([box[3] for box in cluster_boxes])
-            combined_boxes.append([int(x1), int(y1), int(x2), int(y2)])
-
-        return combined_boxes
-
-    def get_roi(self, frame, depth_image):
-        """ROI（領域）を取得する関数"""
-        roi_depth = depth_image[: int(depth_image.shape[0] * 4 / 5), :]
-        roi_color = frame[: int(frame.shape[0] * 4 / 5), :]
-        return roi_depth, roi_color
-
-    def preprocess_depth(self, roi_depth):
-        """深度ROIを前処理する関数"""
-        roi_depth_blurred = cv2.GaussianBlur(roi_depth, (5, 5), 0)
-        return roi_depth_blurred
-
-    def create_obstacle_mask(self, roi_depth):
-        """障害物マスクを作成する関数"""
-        max_distance = 300  # 300mm
-        min_distance = 100  # 100mm
-        mask = np.logical_and(roi_depth > min_distance, roi_depth < max_distance)
-        obstacle_image = np.zeros_like(roi_depth, dtype=np.uint8)
-        obstacle_image[mask] = 255
-        return obstacle_image
-
-    def apply_morphology(self, obstacle_image):
-        """モルフォロジー処理を適用する関数"""
-        kernel = np.ones((5, 5), np.uint8)
-        obstacle_image_processed = cv2.morphologyEx(
-            obstacle_image, cv2.MORPH_CLOSE, kernel
-        )
-        obstacle_image_processed = cv2.morphologyEx(
-            obstacle_image_processed, cv2.MORPH_OPEN, kernel
-        )
-        return obstacle_image_processed
-
-    def find_obstacle_contours(self, obstacle_image):
-        """障害物の輪郭を検出する関数"""
-        contours, _ = cv2.findContours(
-            obstacle_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
-        )
-        return contours
+            self.gui.update_stop()
+            self.send(Commands.START)
 
     def main_loop(self):
-        """メインループを開始します。"""
         logger.info("Starting main loop")
         self.initialize_loop_variables()
 
         while True:
+            if not self.initialized:
+                continue
             self.update_seg()
             frame_start_time = time.time()
             self.reset_detection_flags()
             self.capture_frame()
-            self.process_obstacles_and_targets()
+            if self.gui.var_enable_tracking.get():
+                self.first_disable_tracking = True
+                self.process_obstacles_and_targets()
+            elif self.first_disable_tracking:
+                self.first_disable_tracking = False
+                self.send(Commands.STOP_TEMP)
             self.update_motor_power()
             self.update_rfid_power()
             self.send_commands_if_needed()
@@ -505,7 +398,6 @@ class Tracker:
             self.update_gui()
 
     def initialize_loop_variables(self):
-        """ループ内で使用する変数を初期化します。"""
         self.fps = 0
         self.total_fps = 0
         self.avr_fps = 0
@@ -516,111 +408,176 @@ class Tracker:
         self.disconnect = False
         self.stop_temp = False
         self.target_last_seen_time = time.time()
+        self.target_detection_start_time = None
+        self.time_detected = 0
+        self.max_motor_power_threshold = self.frame_width / 4
+        self.motor_power_l, self.motor_power_r = 0, 0
+
+        self.interval_serial_send_start_time = 0
+        self.interval_serial_send_motor_start_time = 0
+        self.send_check_start_time = 0
+
+        self.seg = 0
+        self.sent_count = 0
 
     def update_motor_power(self):
-        self.app.root.after(
-            0, self.app.update_motor_values, self.motor_power_l, self.motor_power_r
-        )
+        if not self.stop and not self.stop_temp:
+            self.gui.root.after(
+                0, self.gui.update_motor_values, self.motor_power_l, self.motor_power_r
+            )
 
     def update_rfid_power(self):
-        power = self.rfid_reader.get_predicted_power()
-        self.app.update_rfid_values([power, 0, 0, 0])
+        if self.RFID_ENABLED and self.rfid_accessing:
+            detection_counts = self.rfid_reader.get_detection_counts()
+            self.gui.update_rfid_values(detection_counts)
+        else:
+            self.gui.update_rfid_values({1: 0, 2: 0, 3: 0, 4: 0})
 
     def update_seg(self):
         self.seg += 1
         if self.seg > 9:
             self.seg = 0
-        self.app.update_seg(self.seg)
+        self.gui.update_seg(self.seg)
 
     def reset_detection_flags(self):
-        """検出に関するフラグをリセットします。"""
         self.target_detected = False
         self.target_position_str = "X"
+        self.stop_exec_cmd = False
         self.target_x = 0
         self.no_obs = True
         self.safe_x = 0
 
     def capture_frame(self):
-        """フレームをキャプチャします。"""
-        if DEBUG_USE_WEBCAM:
-            _, frame = self.video_capture.read()
-            self.frame = cv2.flip(frame, 1)
+        if self.RFID_ONLY_MODE and self.RFID_ENABLED:
+            self.frame = np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
         else:
-            self.frame = np.copy(self.serial.color_image)
-            self.depth_frame = np.copy(self.serial.depth_image)
+            if DEBUG_USE_WEBCAM:
+                ret, frame = self.video_capture.read()
+                if not ret:
+                    logger.warning("Failed to read frame from webcam.")
+                    self.frame = (
+                        np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
+                    )
+                else:
+                    self.frame = cv2.flip(frame, 1)
+            else:
+                if (
+                    hasattr(self.serial, "color_image")
+                    and self.serial.color_image is not None
+                ):
+                    self.frame = np.copy(self.serial.color_image)
+                else:
+                    self.frame = (
+                        np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
+                    )
+
+    def execute_rfid_direction(self, rotate=False):
+        """RFIDの移動方向を取得して移動指示を送信する"""
+        self.rfid_accessing = True
+        if not self.stop or (self.auto_stop and self.mode == Tracker.Mode.DUAL):
+            if rotate:
+                direction = self.rfid_reader.get_rotate_direction()
+            else:
+                direction = self.rfid_reader.get_direction()
+            if direction != Commands.STOP_TEMP and self.auto_stop:
+                self.start_motor()
+            self.send(direction)
 
     def process_obstacles_and_targets(self):
-        """障害物と対象物の検出および処理を行います。"""
-        if not DEBUG_USE_WEBCAM:
-            self.frame, self.no_obs, self.safe_x = self.process_obstacles(
-                self.frame, self.depth_frame
+        current_time = time.time()
+
+        if not DEBUG_USE_WEBCAM and DEBUG_DETECT_OBSTACLES:
+            self.frame, self.no_obs, self.safe_x = self.obstacles.process_obstacles(
+                self.frame, self.serial.depth_image
             )
 
-        targets = self.detect_target()
-        self.bkl = self.motor_power_l
-        self.bkr = self.motor_power_r
+        detected_targets = self.target_processor.detect_targets(
+            self.frame, self.RFID_ONLY_MODE, self.RFID_ENABLED
+        )
 
-        if len(targets) > 0:
-            # 対象が検出されたので、最後に検出された時刻を更新
-            self.target_last_seen_time = time.time()
-            self.stop_temp = False
-            result = self.process_target(targets)
-            if result != (None, None, None):
-                target_center_x, self.target_x, target_distance = result
-                self.target_position_str = self.get_target_pos_str(target_center_x)
-                self.calculate_motor_power_with_distance(self.target_x, target_distance)
-        else:
-            # 対象が検出されなかった場合
-            current_time = time.time()
-            time_since_last_seen = current_time - self.target_last_seen_time
-            if time_since_last_seen > 1.0:  # 1秒以上対象が検出されなかった場合
-                if not self.stop_temp:
-                    self.stop_motor(True)
-                    self.stop_temp = True
+        self.rfid_accessing = False
 
-        if not self.no_obs:
-            self.calculate_motor_power(-self.safe_x)
+        if not self.RFID_ONLY_MODE:
+            if len(detected_targets) > 1:
+                # 二人以上検出された場合の処理
+                logger.info(f"Multiple targets detected: {len(detected_targets)}")
+                if self.RFID_ENABLED:
+                    self.execute_rfid_direction()
+            elif len(detected_targets) == 1:
+                # 一人のみ検出された場合の既存の処理
+                if self.target_detection_start_time is None:
+                    self.target_detection_start_time = current_time
+                else:
+                    self.time_detected = current_time - self.target_detection_start_time
+
+                    if self.time_detected >= 0.3:
+                        self.target_last_seen_time = current_time
+                        self.stop_temp = False
+                        result = self.target_processor.process_target(
+                            detected_targets, self.frame
+                        )
+                        if result is not None:
+                            (target_center_x, self.target_x) = result
+                            self.target_position_str = self.get_target_pos_str(
+                                target_center_x
+                            )
+                            self.calculate_motor_power(self.target_x)
+            elif len(detected_targets) == 0:
+                if self.target_detection_start_time is not None:
+                    self.target_detection_start_time = None
+
+                time_since_last_seen = current_time - self.target_last_seen_time
+                if time_since_last_seen > 1.0 and not self.stop_temp:
+                    logger.info("Target lost")
+                    if self.RFID_ENABLED:
+                        self.execute_rfid_direction()
+                    else:
+                        self.stop_exec_cmd = True
+                        self.send(self.lost_target_command)
+            else:
+                if self.RFID_ENABLED:
+                    self.execute_rfid_direction()
+
+        if self.RFID_ONLY_MODE and self.RFID_ENABLED:
+            self.target_position_str = self.rfid_reader.get_direction()
+            if not self.stop:
+                self.send(self.target_position_str)
+
+        if self._def_spd_bk != self.default_speed:
+            self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
+            self._def_spd_bk = self.default_speed
 
     def send_commands_if_needed(self):
-        """必要に応じてコマンドを送信します。"""
         current_time = time.time()
         if current_time - self.interval_serial_send_start_time > SERIAL_SEND_INTERVAL:
             self.sent_count += 1
             self.interval_serial_send_start_time = current_time
-
-            if self.app.var_enable_tracking.get() and not self.stop:
-                if self.bkl != self.motor_power_l:
-                    self.send((Commands.SET_SPD_LEFT, self.motor_power_l))
-                if self.bkr != self.motor_power_r:
-                    self.send((Commands.SET_SPD_RIGHT, self.motor_power_r))
-
-                if self.target_position_str == "X":
-                    self.app.queue.add("g", "Target not found")
-                else:
-                    self.app.queue.add(
-                        "g",
-                        "GO:{} | L:{}% R:{}%".format(
-                            self.target_position_str,
-                            self.motor_power_l,
-                            self.motor_power_r,
-                        ),
-                    )
-
             self.send(Commands.CHECK)
+
+        if (
+            current_time - self.interval_serial_send_motor_start_time
+            > SERIAL_SEND_MOTOR_INTERVAL
+        ):
+            self.interval_serial_send_motor_start_time = current_time
+            if not self.stop and not self.stop_temp and not self.stop_exec_cmd:
+                self.send((Commands.L_SPEED, self.motor_power_l))
+                self.bkl = self.motor_power_l
+                self.send((Commands.R_SPEED, self.motor_power_r))
+                self.bkr = self.motor_power_r
 
         if current_time - self.send_check_start_time > 1:
             self.sent_count = 0
             self.send_check_start_time = current_time
 
     def receive_serial_data(self):
-        """シリアルデータを受信します。"""
         received = self.serial.get_received_queue()
         if received:
-            self.app.queue.add_all("r", received)
+            self.gui.queue.add_all("r", received)
             self.received_serial = received[-1]
+            # ログに受信データを記録
+            logger.info(f"Received Serial Data: {received[-1]}")
 
     def update_fps(self, frame_start_time):
-        """FPSを更新します。"""
         fps_end_time = time.time()
         time_taken = fps_end_time - frame_start_time
         if time_taken > 0:
@@ -634,52 +591,36 @@ class Tracker:
             self.total_fps = 0
 
     def handle_disconnection(self):
-        """接続状態を監視し、切断時の処理を行います。"""
+        """接続状態を監視し、切断時の処理を行う"""
         if not self.serial.ser_connected:
             self.stop = True
             self.print_stop()
             if self.serial.test_connect():
                 asyncio.run(self.serial.connect_socket())
             if not self.disconnect:
-                self.app.update_stop(connected=False)
+                self.gui.update_stop(connected=False)
                 self.disconnect = True
                 logger.warning("Disconnected from serial")
         else:
             if self.disconnect:
-                self.app.update_stop(connected=True)
+                self.gui.update_stop(connected=True)
                 logger.info("Reconnected to serial")
             self.disconnect = False
 
     def update_debug_info(self):
-        """デバッグ情報を更新します。"""
         debug_text = (
-            "{} {} x {} {} x: {} y: {} avr_fps: {} fps: {} target_position: {}\n"
-            "target_x: {} motor_power_l: {} motor_power_r: {}\n"
-            "connected: {} port: {} baud: {} data: {}\n"
-            "STOP: {} serial_received: {}\n"
-            "obstacle_detected: {} safe_x: {} no_detection: {}".format(
-                self.seg,
-                math.floor(self.frame_width),
-                math.floor(self.frame_height),
-                "O" if self.target_position_str != "X" else "X",
-                self.d_x,
-                self.d_y,
-                math.floor(self.avr_fps),
-                math.floor(self.fps),
-                self.target_position_str,
-                self.target_x,
-                self.motor_power_l,
-                self.motor_power_r,
-                self.serial.ser_connected,
-                SERIAL_PORT,
-                SERIAL_BAUD,
-                self.serial.serial_sent,
-                self.stop,
-                self.received_serial,
-                not self.no_obs,
-                self.safe_x,
-                round(time.time() - self.target_last_seen_time, 2),
-            )
+            f"{self.seg} {math.floor(self.frame_width)} x {math.floor(self.frame_height)} "
+            f"{'O' if self.target_position_str != 'X' else 'X'} x: {self.d_x} y: {self.d_y} "
+            f"avr_fps: {math.floor(self.avr_fps)} fps: {math.floor(self.fps)} "
+            f"target_position: {self.target_position_str}\n"
+            f"target_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr}\n"
+            f"connected: {self.serial.ser_connected} port: {SERIAL_PORT} baud: {SERIAL_BAUD} data: {self.serial.serial_sent}\n"
+            f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
+            f"obstacle_detected: {not self.no_obs} safe_x: {self.safe_x} "
+            f"no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
+            f"detecting: {round(self.time_detected, 2):.2f}\n"
+            f"self.RFID_ENABLED: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} def_speed: {self.default_speed}\n"
+            f"Auto_Stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%}"
         )
         self.print_d(debug_text)
         self.print_key_binds()
@@ -687,8 +628,8 @@ class Tracker:
             self.print_stop()
 
     def update_gui(self):
-        """GUIを更新します。"""
-        self.app.update_frame(self.frame)
+        if self.frame is not None:
+            self.gui.update_frame(self.frame)
 
     def close(self):
         logger.info("Closing application")
@@ -700,49 +641,56 @@ class Tracker:
 
         cv2.destroyAllWindows()
 
-    async def init(self):
-        logger.info("Starting up...")
+    def init(self):
+        re_init = self.initialized
+        self.initialized = False
+        if not re_init:
+            logger.info("Starting up...")
         time_startup = time.time()
 
-        casc_path = cv2.data.haarcascades + Cascades.FACE
-        self.cascade = cv2.CascadeClassifier(casc_path)
-        if self.cascade.empty():
-            logger.error("Failed to load cascade classifier")
+        if self.video_capture is not None:
+            self.video_capture.release()
+        if self.rfid_reader is not None:
+            self.rfid_reader.close()
+            self.update_rfid_power()
 
-        if DEBUG_USE_WEBCAM:
+        self.set_mode(self.gui.mode_var.get())
+
+        self.frame_width = FRAME_WIDTH
+        self.frame_height = FRAME_HEIGHT
+
+        if DEBUG_USE_WEBCAM and not self.RFID_ONLY_MODE:
             self.video_capture = cv2.VideoCapture(CAM_NO)
             self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
             self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
             self.frame_width = self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)
             self.frame_height = self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            logger.info(
-                f"Webcam initialized: Width={self.frame_width}, Height={self.frame_height}"
-            )
-        else:
-            self.frame_width = FRAME_WIDTH
-            self.frame_height = FRAME_HEIGHT
-            logger.info(
-                f"Using predefined frame size: Width={self.frame_width}, Height={self.frame_height}"
-            )
 
         self.frame = None
 
-        logger.info("Initializing RFID Reader")
-        self.rfid_reader = RFIDReader(port="COM4", baudrate=38400)
-        logger.info(
-            f"RFID Antenna Connected: {self.rfid_reader.check_antenna_status()}"
-        )
-        self.rfid_reader.start_reading()
+        if self.RFID_ENABLED:
+            logger.info("Initializing RFID Reader")
+            self.rfid_reader = RFIDReader(port="COM4", baudrate=38400)
+            logger.info(
+                f"RFID Antenna Status: {self.rfid_reader.check_antenna_status()}"
+            )
+            self.rfid_reader.start_reading()
 
         self.d_x, self.d_y = 0, 0
         self.face_x, self.face_center_x = 0, 0
+        self.target_detection_start_time = None
+        self.time_detected = 0
+        self.prev_command = Commands.STOP_TEMP
 
         self.max_motor_power_threshold = self.frame_width / 4
         self.motor_power_l, self.motor_power_r = 0, 0
 
         self.interval_serial_send_start_time = 0
+        self.interval_serial_send_motor_start_time = 0
         self.send_check_start_time = 0
+        self.occupancy_ratio = 0
+        self.is_close = False
 
         self.seg = 0
         self.sent_count = 0
@@ -751,12 +699,12 @@ class Tracker:
             "Startup completed. Elapsed time: {}".format(self.elapsed_str(time_startup))
         )
 
-        self.root = tk.Tk()
-        self.app = gui.App(self, self.root)
+        if not re_init:
+            tracker_thread = threading.Thread(target=self.run_loop_serial)
+            tracker_thread.daemon = True
+            tracker_thread.start()
 
-        tracker_thread = threading.Thread(target=self.run_loop_serial)
-        tracker_thread.daemon = True
-        tracker_thread.start()
+        self.initialized = True
 
     def run_loop_serial(self):
         asyncio.run(self.serial.loop_serial())
@@ -770,11 +718,18 @@ class Tracker:
         self.close()
 
 
-async def main():
+def main():
     tracker = Tracker()
-    await tracker.init()
+    logger.info("Initializing GUI")
+    tracker.root = tk.Tk()
+    tracker.gui = gui.GUI(tracker, tracker.root)
+    tracker.gui.queue.wait_for("init")
+    tracker.init()
     tracker.start()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.exception("An error occurred in the main execution loop.")

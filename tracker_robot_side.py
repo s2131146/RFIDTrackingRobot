@@ -8,16 +8,29 @@ import numpy as np
 import math
 import time
 import cv2
+import os
+import logging
+
+LOG_FILENAME = "robot.log"
+
+if os.path.exists(LOG_FILENAME):
+    os.remove(LOG_FILENAME)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[Socket %(asctime)s.%(msecs)03d] %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.FileHandler(LOG_FILENAME, mode="w"),
+        logging.StreamHandler(),
+    ],
+)
 
 
 def pr(txt, ow=False):
-    txt = txt.rstrip("\n")
-    txt = txt.replace("\n", "")
-    t_delta = datetime.timedelta(hours=9)
-    JST = datetime.timezone(t_delta, "JST")
-    now = datetime.datetime.now(JST)
+    txt = txt.rstrip("\n").replace("\n", "")
     if not ow:
-        print("[Socket {}] {}".format(now.strftime("%H:%M:%S.%f")[:-3], txt))
+        logging.info(txt)
 
 
 class TrackerSocketRobot:
@@ -34,8 +47,8 @@ class TrackerSocketRobot:
     def on_receive(self, received):
         parts = str(received).split(":")
         cmd = parts[0]
-        cmd_id = parts[1]
-        remaining_parts = parts[2:]
+        cmd_id = parts[1] if len(parts) > 1 else 0
+        remaining_parts = parts[2:] if len(parts) > 2 else ""
 
         if "\n" in remaining_parts[-1]:
             last_part = remaining_parts[-1].strip()
@@ -52,7 +65,9 @@ class TrackerSocketRobot:
             self.close()
         elif cmd == "send":
             ret = self.send_serial(data)
-            self.send_to_host(ret, cmd_id, "send", True if data == "YO" else False)
+            self.send_to_host(
+                ret, cmd_id, "send", True if data == "YO" or data == "STMP" else False
+            )
         elif cmd == "print":
             res, ret = self.print_serial()
             response = ret if res else "NULL"
@@ -68,10 +83,10 @@ class TrackerSocketRobot:
             pr("Send timed out")
 
     def connect_socket(self):
-        """シリアル通信を開始
+        """Start serial communication.
 
         Returns:
-            bool: 接続結果
+            bool: Connection result
         """
         self.send_to_host("Connecting to Arduino...")
         self.com = serial.Serial()
@@ -85,7 +100,7 @@ class TrackerSocketRobot:
             self.com_connected = True
             self.send_to_host("Serial port connected")
         except serial.SerialException as e:
-            pr(e)
+            pr(str(e))
             self.send_to_host("Serial port is not open")
         return self.com_connected
 
@@ -101,13 +116,13 @@ class TrackerSocketRobot:
         self.send_serial("stop")
 
     def send_serial(self, data) -> bool:
-        """シリアル通信でコマンドを送信
+        """Send a command via serial communication.
 
         Args:
-            data (str|tuple): 送信データ (コマンド|(コマンド, 値))
+            data (str|tuple): Data to send (command|(command, value))
 
         Return:
-            bool: 送信結果
+            bool: Send result
         """
         if not self.com_connected and not self.connect_socket():
             return False
@@ -119,8 +134,8 @@ class TrackerSocketRobot:
 
         self.command_sent = self.get_command(data).upper()
         self.serial_sent = data
-        if data != "YO":
-            pr(f"Send Serial: {data}")
+        if data == "YO":
+            return True
         data += "\n"
 
         try:
@@ -132,11 +147,10 @@ class TrackerSocketRobot:
             return False
 
     def print_serial(self):
-        """Arduinoからのシリアル通信の内容を出力"""
+        """Output the content received from Arduino via serial communication."""
         try:
             if isinstance(self.com, serial.Serial) and self.com.in_waiting > 0:
                 res = self.com.readline().decode("utf-8", "ignore").strip()
-                self.send_to_host("Received: {}".format(res))
                 return True, res
             else:
                 return False, ""
@@ -145,8 +159,10 @@ class TrackerSocketRobot:
             return False, ""
 
     def close(self):
-        client_socket.close()
-        self.com.close()
+        if client_socket:
+            client_socket.close()
+        if self.com:
+            self.com.close()
 
 
 client_socket = None
@@ -154,6 +170,12 @@ server_socket = None
 tracker = None
 pipeline = None
 cam_connected = False
+
+
+def get_ipv4_address():
+    hostname = socket.gethostname()
+    ip_address = socket.gethostbyname(hostname)
+    return ip_address
 
 
 def init():
@@ -165,6 +187,7 @@ def init():
     server_socket.listen(1)
     server_socket.settimeout(0.1)
 
+    pr(f"Listening on IP: {get_ipv4_address()} PORT: {server_port}")
     pr("Waiting for connection...")
 
     while True:
@@ -200,7 +223,8 @@ def stream_cam():
 
         send_data(b"color" + color_data)
         send_data(b"depth" + depth_data)
-    except Exception:
+    except Exception as e:
+        pr(f"Camera streaming error: {e}")
         pipeline = None
         cam_connected = False
 
@@ -234,7 +258,7 @@ def loop():
         while True:
             if not cam_connected:
                 cam_connected = init_cam()
-            stream_cam()
+            # stream_cam()
             data = receive_data()
             if not data:
                 continue
@@ -244,43 +268,43 @@ def loop():
             else:
                 if tracker is not None:
                     tracker.on_receive(data)
-            res, ret = tracker.print_serial()
-            if res:
-                pr(f"Arduino: {ret}")
-                response = ret if res else "NULL"
-                tracker.send_to_host(response, -1, "print", True)
+            if tracker:
+                res, ret = tracker.print_serial()
+                if res:
+                    pr(f"Arduino: {ret}")
+                    response = ret if res else "NULL"
+                    tracker.send_to_host(response, -1, "print", True)
     except ConnectionResetError:
-        tracker.stop()
+        if tracker:
+            tracker.stop()
         pr("Client disconnected")
     except Exception as e:
         pr("An error occurred: {}\n{}".format(e, traceback.format_exc()))
     finally:
         pr("Closing sockets...")
-        client_socket.close()
-        server_socket.close()
+        if client_socket:
+            client_socket.close()
+        if server_socket:
+            server_socket.close()
 
 
 def main():
-    while True:
-        try:
-            init()
-            pr("Loop starting")
-            loop()
-        except KeyboardInterrupt:
+    try:
+        init()
+        pr("Loop starting")
+        loop()
+    except KeyboardInterrupt:
+        if tracker:
             tracker.stop()
-            pr("Interrupted by user")
-            break
-        except Exception as e:
+        pr("Interrupted by user")
+    except Exception as e:
+        if tracker:
             tracker.stop()
-            pr(
-                "An error occurred in main loop: {}\n{}".format(
-                    e, traceback.format_exc()
-                )
-            )
-            pr("Restarting...")
+        pr("An error occurred in main loop: {}\n{}".format(e, traceback.format_exc()))
 
 
 def init_cam():
+    return True
     global pipeline
     try:
         pr("Initializing RealSense...")
@@ -299,7 +323,8 @@ def init_cam():
         frame_height = color_intrinsics.height
         pr(f"Frame WIDTH: {frame_width}, HEIGHT: {frame_height}")
 
-    except RuntimeError:
+    except RuntimeError as e:
+        pr(f"RealSense initialization failed: {e}")
         return False
 
     context = rs.context()
@@ -314,6 +339,7 @@ def init_cam():
             )
         return True
     else:
+        pr("No RealSense devices found.")
         return False
 
 

@@ -7,6 +7,7 @@ import asyncio
 import numpy as np
 import cv2
 import logger as l
+import pyrealsense2 as rs
 from utils import Utils
 from constants import Commands
 
@@ -18,14 +19,26 @@ class TrackerSocket:
     command_sent = ""
     queue = tqueue.TQueue()
     data_id = 0
+    pipeline = None
 
-    def __init__(self, p, b, i, d, port):
+    def __init__(self, p, b, i, d, port, webcam):
         self.ser_port = p
         self.baud = b
         self.interval = i
         self.debug = d
-        self.tcp_ip = TrackerSocket.get_local_ip()
+        self.tcp_ip = self.get_local_ip()
         self.tcp_port = port
+
+        if not webcam:
+            self.pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+            config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+
+            try:
+                self.pipeline.start(config)
+            except RuntimeError:
+                logger.info("No RealSense connected.")
 
     @classmethod
     def get_local_ip(cls):
@@ -93,10 +106,19 @@ class TrackerSocket:
         return None
 
     def process_data(self, data):
-        header = data.decode("ISO-8859-1")[:5]
+        """header = data.decode("ISO-8859-1")[:5]
         if header == "color" or header == "depth":
             self.make_images(header, data[5:])
-            return
+            return"""
+
+        if self.pipeline is not None:
+            frames = self.pipeline.wait_for_frames()
+            color_frame = frames.get_color_frame()
+            depth_frame = frames.get_depth_frame()
+
+            if color_frame and depth_frame:
+                self.color_image = np.asanyarray(color_frame.get_data())
+                self.depth_image = np.asanyarray(depth_frame.get_data())
 
         self.exec_data(data)
 
@@ -127,7 +149,10 @@ class TrackerSocket:
                 if not data:
                     continue
 
-                self.process_data(data)
+                try:
+                    self.process_data(data)
+                except RuntimeError:
+                    pass
             except Exception:
                 logger.error(
                     "[Socket] An error occured at loop_serial: {}".format(
@@ -187,6 +212,7 @@ class TrackerSocket:
         self.command_sent = self.get_command(cmd).upper()
         if not skip_log:
             self.serial_sent = data
+        logger.debug(f"Send: {data}")
         data += "\n"
 
         try:
