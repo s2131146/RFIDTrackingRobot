@@ -1,10 +1,13 @@
-from tkinter import font
+import threading
+import time
+from tkinter import TclError, font
 import cv2
+import numpy as np
 import tqueue
 import tkinter as tk
 from tkinter import ttk
 from tkinter import scrolledtext as st
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageGrab
 from tracker import Tracker
 
 DEF_MARGIN = 12
@@ -44,7 +47,133 @@ class GUI:
 
         self.update_stop()
 
+        self.recording = False
+        self.recording_thread = None
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.start_recording()
+
         self.queue.add("init")
+
+    def start_recording(self):
+        self.recording = True
+        self.recording_thread = threading.Thread(target=self.record_screen)
+        self.recording_thread.start()
+
+    def stop_recording(self):
+        self.recording = False
+        if self.recording_thread is not None:
+            self.recording_thread.join()
+
+    def on_closing(self):
+        self.stop_recording()
+        self.root.destroy()
+        self.__del__()
+
+    def record_screen(self):
+        import mss
+
+        # ウィンドウの更新を待つ
+        time.sleep(1)
+        # 画面のサイズを取得
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # 解像度を0.75倍に設定
+        scale_factor = 0.75
+        width = int(screen_width * scale_factor)
+        height = int(screen_height * scale_factor)
+
+        # フレームカウンタとタイマーを初期化
+        frame_count = 0
+        start_time = time.time()
+
+        # FourCCコードを'MJPG'に設定し、ファイル拡張子を'.avi'に
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        out_filename = "tracker.avi"
+        out = cv2.VideoWriter(out_filename, fourcc, 10.0, (width, height))
+
+        sct = mss.mss()
+        monitor = {"top": 0, "left": 0, "width": screen_width, "height": screen_height}
+
+        # 目標のフレーム間隔（秒）
+        target_frame_interval = 1.0 / 10.0  # 10fps
+
+        while self.recording:
+            # フレームのキャプチャ開始時間
+            frame_start_time = time.time()
+
+            # 画面全体をキャプチャ
+            sct_img = sct.grab(monitor)
+            img = np.array(sct_img)
+
+            # 解像度を0.75倍にリサイズ
+            frame = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+            # BGRに変換（mssはBGRAで取得するので、3チャンネルにする）
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+            out.write(frame)
+            frame_count += 1
+
+            # 処理時間を考慮して待機
+            elapsed_time = time.time() - frame_start_time
+            sleep_time = max(0, target_frame_interval - elapsed_time)
+            time.sleep(sleep_time)
+
+        # 録画が終了したら、総録画時間を計算
+        total_time = time.time() - start_time
+        print(f"録画時間: {total_time:.2f} 秒")
+        print(f"フレーム数: {frame_count}")
+        print(f"実際の平均FPS: {frame_count / total_time:.2f} fps")
+
+        out.release()
+        cv2.destroyAllWindows()
+        print("録画が完了しました")
+
+    def adjust_video(self, filename, fps):
+        # OpenCVで動画ファイルを読み込み、fpsを修正して新しいファイルとして保存
+        cap = cv2.VideoCapture(filename)
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        out = cv2.VideoWriter("tracker.avi", fourcc, fps, (width, height))
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            out.write(frame)
+
+        cap.release()
+        out.release()
+        print(f"フレームレートを {fps:.2f} fps に修正しました")
+
+    def adjust_video_fps(self, filename, fps):
+        # 動画ファイルのフレームレートを変更するために、FFmpegを使用します
+        import subprocess
+
+        temp_filename = "temp_" + filename
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            filename,
+            "-filter:v",
+            f"fps={fps}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "28",  # CRF値を高くするとビットレートが下がり、画質も下がる
+            temp_filename,
+        ]
+        subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # 元のファイルを置き換え
+        import os
+
+        os.replace(temp_filename, filename)
 
     def create_main_frame(self):
         self.main_frame = tk.Frame(self.root)
@@ -74,7 +203,7 @@ class GUI:
             self.bottom_frame, text="Enable tracking", variable=self.var_enable_tracking
         )
         self.enable_tracking_checkbox.grid(
-            row=0, column=0, padx=0, pady=0, sticky=STICKY_LEFT
+            row=1, column=0, padx=0, pady=0, sticky=STICKY_LEFT
         )
 
         self.label_wheel = tk.Label(self.bottom_frame)
@@ -82,7 +211,7 @@ class GUI:
 
         # RFIDアンテナのアイコンを「Enable tracking」の右側に固定
         self.rfid_frame = tk.Frame(self.bottom_frame)
-        self.rfid_frame.grid(row=1, column=0, padx=(0, 0), pady=0, sticky=STICKY_CENTER)
+        self.rfid_frame.grid(row=0, column=0, padx=(0, 0), pady=0, sticky=STICKY_CENTER)
 
         self.rfid_values = [tk.StringVar(value="0") for _ in range(4)]
         self.rfid_canvases = []
@@ -119,13 +248,13 @@ class GUI:
             label.grid(row=1, column=i, padx=0, pady=(0, 0), sticky=STICKY_CENTER)
 
         # モーター表示用のフレームを追加
-        self.motor_frame = tk.Frame(self.bottom_frame)
+        self.motor_frame = tk.Frame(self.rfid_frame)
         self.motor_frame.grid(
-            row=1,
-            column=1,
-            columnspan=3,
+            row=2,
+            column=0,
+            columnspan=5,
             padx=0,
-            pady=(10, 0),
+            pady=(0, 0),
             sticky=STICKY_CENTER,
         )
 
@@ -172,6 +301,9 @@ class GUI:
             label.grid(
                 row=1, column=i, padx=20, pady=(5, DEF_MARGIN), sticky=STICKY_CENTER
             )
+
+        self.depth_frame = tk.Label(self.bottom_frame)
+        self.depth_frame.grid(row=0, column=1, padx=0, pady=0)
 
     def draw_rounded_rectangle(self, canvas, x1, y1, x2, y2, radius=25, **kwargs):
         points = [
@@ -419,7 +551,10 @@ class GUI:
             self.tracker.stop_motor()
 
     def update_status(self, status):
-        self.label_status.config(text=status)
+        try:
+            self.label_status.config(text=status)
+        except TclError:
+            pass
 
     def update_wheel(self):
         if self.queue.has("g"):
@@ -428,14 +563,18 @@ class GUI:
     def update_seg(self, seg):
         self.label_seg.config(text=seg)
 
-    def update_frame(self, frame):
+    def update_frame(self, frame, depth_frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame)
+        imgd = Image.fromarray(depth_frame)
         if not hasattr(self, "imgtk"):
             self.imgtk = ImageTk.PhotoImage(image=img)
+            self.imgtkd = ImageTk.PhotoImage(image=imgd)
             self.video_frame.config(image=self.imgtk)
+            self.depth_frame.config(image=self.imgtkd)
         else:
             self.imgtk.paste(img)
+            self.imgtkd.paste(imgd)
 
         self.update_commands("s", self.sent_text, self.label_sent)
         self.update_commands("r", self.received_text, self.label_received)
@@ -495,6 +634,25 @@ class GUI:
         r_str = str(right_value) + "%"
         self.motor_left_var.set(l_str)
         self.motor_right_var.set(r_str)
+
+        canvas_l = self.motor_canvases[0]
+        canvas_r = self.motor_canvases[1]
+        rect_id_l = self.motor_rect_ids[0]
+        rect_id_r = self.motor_rect_ids[1]
+
+        if left_value == 0:
+            color_l = "white"
+        else:
+            green_intensity = min(255, int(((left_value - 40) / 60) * 255))
+            color_l = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
+        if right_value == 0:
+            color_r = "white"
+        else:
+            green_intensity = min(255, int(((right_value - 40) / 60) * 255))
+            color_r = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
+
+        canvas_r.itemconfig(rect_id_r, fill=color_r)
+        canvas_l.itemconfig(rect_id_l, fill=color_l)
 
     def __del__(self):
         self.tracker.close()

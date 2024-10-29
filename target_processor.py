@@ -27,7 +27,7 @@ class TargetProcessor:
             self.tracker.CLOSE_OCCUPANCY_RATIO,
             self.tracker.AUTO_STOP_OCCUPANCY_RATIO,
         ]
-        speeds = [400, 350, 150]
+        speeds = [200, 200, 100]
 
         occupancy = self.tracker.occupancy_ratio
 
@@ -80,8 +80,9 @@ class TargetProcessor:
             frame: MatLike
 
         Returns:
-            Tuple[Optional[int], Optional[int], frame]: (target_center_x, target_x, frame)
+            Tuple[Optional[int], Optional[int], List[Tuple[int, int, int, int]]]: (target_center_x, target_x, target_bboxes)
         """
+        target_bboxes = []
         for x1, y1, x2, y2, confidence in targets:
             target_center_x = x1 + (x2 - x1) // 2
             target_x = math.floor(target_center_x - self.frame_width / 2)
@@ -117,7 +118,9 @@ class TargetProcessor:
                 1,
             )
 
-            return target_center_x, target_x
+            target_bboxes.append((x1, y1, x2, y2))
+
+            return target_center_x, target_x, target_bboxes
 
         return None
 

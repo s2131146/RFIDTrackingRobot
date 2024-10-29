@@ -212,7 +212,8 @@ class TrackerSocket:
         self.command_sent = self.get_command(cmd).upper()
         if not skip_log:
             self.serial_sent = data
-        logger.debug(f"Send: {data}")
+        if cmd != Commands.CHECK:
+            logger.debug(f"Send: {data}")
         data += "\n"
 
         try:

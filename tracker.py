@@ -1,4 +1,8 @@
 import os
+
+# カメラ起動高速化
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
+
 import threading
 import cv2
 import time
@@ -17,9 +21,6 @@ import logger as l
 from obstacles import Obstacles
 from target_processor import TargetProcessor
 
-# カメラ起動高速化
-os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
-
 from ultralytics import YOLO
 
 # シリアルポートの設定
@@ -34,10 +35,10 @@ TCP_PORT = 8001
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
-CAM_NO = 0
+CAM_NO = 3
 
 DEBUG_SERIAL = True
-DEBUG_USE_WEBCAM = False
+DEBUG_USE_ONLY_WEBCAM = False
 DEBUG_DETECT_OBSTACLES = True
 
 # Cascade 関連のフラグとリストを削除
@@ -48,11 +49,15 @@ logger = l.logger
 class Tracker:
     """Trackerクラス: 人物検出と距離推定（画像面積ベース）、モーター制御を行う"""
 
-    # 動作モード
     class Mode(Enum):
         CAM_ONLY = 1
         DUAL = 2
         RFID_ONLY = 3
+
+    class State(Enum):
+        FOLLOW_TARGET = 1
+        AVOID_OBSTACLE = 2
+        TURN_TOWARDS_TARGET = 3
 
     def __init__(self):
         self.root = self.video_capture = None
@@ -77,7 +82,7 @@ class Tracker:
             SERIAL_SEND_INTERVAL,
             DEBUG_SERIAL,
             TCP_PORT,
-            DEBUG_USE_WEBCAM,
+            DEBUG_USE_ONLY_WEBCAM,
         )
 
         self.stop = False
@@ -282,6 +287,7 @@ class Tracker:
         c = self.serial.command_sent.upper()
         if c == Commands.STOP:
             self.stop = True
+            self.lost_target_command = Commands.STOP_TEMP
             self.gui.update_stop()
             logger.info("Motor stopped")
         elif c == Commands.START:
@@ -289,6 +295,66 @@ class Tracker:
             logger.info("Motor started")
         elif c == Commands.STOP_TEMP:
             self.stop_temp = True
+
+    def avoid_obstacle(self):
+        """障害物を回避するためのモーター出力を滑らかに設定"""
+        # 障害物の安全なX座標に基づいてターンの強さを決定
+        # obstacle_free_center_x は障害物回避後の目標X座標
+        target_x = self.safe_x  # obstacles.py で計算された安全なX座標
+
+        # 中央からのずれを正規化 (-1.0 ~ 1.0)
+        normalized_error = target_x / (self.frame_width / 2)
+
+        # 方向調整の強さを設定（0〜100）
+        steer_strength = 50  # 調整可能
+
+        # ベースモーター出力を設定
+        base_speed = 100  # 必要に応じて調整
+
+        if normalized_error < -0.1:
+            # 左に大きく曲がる必要がある場合
+            self.motor_power_l = max(
+                0, base_speed - abs(normalized_error) * steer_strength
+            )
+            self.motor_power_r = min(
+                100, base_speed + abs(normalized_error) * steer_strength
+            )
+        elif normalized_error > 0.1:
+            # 右に大きく曲がる必要がある場合
+            self.motor_power_r = max(
+                0, base_speed - abs(normalized_error) * steer_strength
+            )
+            self.motor_power_l = min(
+                100, base_speed + abs(normalized_error) * steer_strength
+            )
+        else:
+            # 中央付近の場合は直進
+            self.motor_power_l = base_speed
+            self.motor_power_r = base_speed
+
+        # 追加でモーター出力をスムーズに調整するための制限（オプション）
+        self.motor_power_l = int(np.clip(self.motor_power_l, 0, 100))
+        self.motor_power_r = int(np.clip(self.motor_power_r, 0, 100))
+
+    def is_obstacle_cleared(self):
+        """障害物がクリアされたかを判断"""
+        # フレーム内に障害物が検出されていない場合
+        return self.no_obs
+
+    def turn_towards_target(self):
+        """障害物回避後に対象に向かってターンする"""
+        if self.lost_target_command == Commands.ROTATE_LEFT:
+            # 左折
+            self.motor_power_l = 50  # 左モーターを低速に
+            self.motor_power_r = 100  # 右モーターを高速に
+        elif self.lost_target_command == Commands.ROTATE_RIGHT:
+            # 右折
+            self.motor_power_l = 100  # 左モーターを高速に
+            self.motor_power_r = 50  # 右モーターを低速に
+        else:
+            # 中央の場合
+            self.motor_power_l = self.default_speed
+            self.motor_power_r = self.default_speed
 
     def calculate_motor_power(self, target_x, obs=False):
         """モーター出力を計算
@@ -352,9 +418,12 @@ class Tracker:
                 self.motor_power_l = base_speed
                 self.motor_power_r = base_speed
 
-        # 障害物が検出された場合、再帰的にモーター出力を調整
-        if not self.no_obs and not obs:
-            self.calculate_motor_power(-self.safe_x, obs=True)
+        self.motor_power_l = int(self.motor_power_l)
+        self.motor_power_r = int(self.motor_power_r)
+
+        # 障害物が検出された場合、状態を変更
+        if not self.no_obs:
+            self.avoid_obstacle()
 
     def get_target_pos_str(self, target_center_x):
         return self.target_processor.get_target_pos_str(target_center_x)
@@ -451,25 +520,14 @@ class Tracker:
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
             self.frame = np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
         else:
-            if DEBUG_USE_WEBCAM:
-                ret, frame = self.video_capture.read()
-                if not ret:
-                    logger.warning("Failed to read frame from webcam.")
-                    self.frame = (
-                        np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
-                    )
-                else:
-                    self.frame = cv2.flip(frame, 1)
+            ret, frame = self.video_capture.read()
+            if not ret:
+                logger.warning("Failed to read frame from webcam.")
+                self.frame = (
+                    np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
+                )
             else:
-                if (
-                    hasattr(self.serial, "color_image")
-                    and self.serial.color_image is not None
-                ):
-                    self.frame = np.copy(self.serial.color_image)
-                else:
-                    self.frame = (
-                        np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
-                    )
+                self.frame = cv2.flip(frame, 1)
 
     def execute_rfid_direction(self, rotate=False):
         """RFIDの移動方向を取得して移動指示を送信する"""
@@ -486,16 +544,12 @@ class Tracker:
     def process_obstacles_and_targets(self):
         current_time = time.time()
 
-        if not DEBUG_USE_WEBCAM and DEBUG_DETECT_OBSTACLES:
-            self.frame, self.no_obs, self.safe_x = self.obstacles.process_obstacles(
-                self.frame, self.serial.depth_image
-            )
-
         detected_targets = self.target_processor.detect_targets(
             self.frame, self.RFID_ONLY_MODE, self.RFID_ENABLED
         )
 
         self.rfid_accessing = False
+        target_bboxes = []
 
         if not self.RFID_ONLY_MODE:
             if len(detected_targets) > 1:
@@ -517,7 +571,7 @@ class Tracker:
                             detected_targets, self.frame
                         )
                         if result is not None:
-                            (target_center_x, self.target_x) = result
+                            (target_center_x, self.target_x, target_bboxes) = result
                             self.target_position_str = self.get_target_pos_str(
                                 target_center_x
                             )
@@ -528,15 +582,23 @@ class Tracker:
 
                 time_since_last_seen = current_time - self.target_last_seen_time
                 if time_since_last_seen > 1.0 and not self.stop_temp:
-                    logger.info("Target lost")
                     if self.RFID_ENABLED:
                         self.execute_rfid_direction()
                     else:
-                        self.stop_exec_cmd = True
-                        self.send(self.lost_target_command)
+                        if not self.stop:
+                            self.stop_exec_cmd = True
+                            self.send(self.lost_target_command)
+
             else:
                 if self.RFID_ENABLED:
                     self.execute_rfid_direction()
+
+        if not DEBUG_USE_ONLY_WEBCAM and DEBUG_DETECT_OBSTACLES:
+            self.frame, self.no_obs, self.safe_x, self.depth_frame = (
+                self.obstacles.process_obstacles(
+                    self.frame, self.serial.depth_image, target_bboxes, self.target_x
+                )
+            )
 
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
             self.target_position_str = self.rfid_reader.get_direction()
@@ -629,14 +691,14 @@ class Tracker:
 
     def update_gui(self):
         if self.frame is not None:
-            self.gui.update_frame(self.frame)
+            self.gui.update_frame(self.frame, self.depth_frame)
 
     def close(self):
         logger.info("Closing application")
         self.stop_motor()
         self.serial.close()
 
-        if DEBUG_USE_WEBCAM:
+        if DEBUG_USE_ONLY_WEBCAM:
             self.video_capture.release()
 
         cv2.destroyAllWindows()
@@ -659,7 +721,7 @@ class Tracker:
         self.frame_width = FRAME_WIDTH
         self.frame_height = FRAME_HEIGHT
 
-        if DEBUG_USE_WEBCAM and not self.RFID_ONLY_MODE:
+        if not self.RFID_ONLY_MODE:
             self.video_capture = cv2.VideoCapture(CAM_NO)
             self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
             self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
@@ -667,7 +729,8 @@ class Tracker:
             self.frame_width = self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)
             self.frame_height = self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
-        self.frame = None
+        self.frame = np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
+        self.depth_frame = np.ones((0, 0, 3), dtype=np.uint8) * 255
 
         if self.RFID_ENABLED:
             logger.info("Initializing RFID Reader")

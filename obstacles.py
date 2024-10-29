@@ -1,230 +1,223 @@
+# obstacles.py
+
 import cv2
 import numpy as np
-import math
+from typing import List, Tuple, Optional
 
 
 class Obstacles:
-    """障害物検出クラス: 障害物の検出と描画を行う"""
+    """障害物検出クラス: 深度情報を使用して障害物と安全な通路を検出・可視化する"""
 
-    def __init__(self, frame_width, frame_height, logger):
+    def __init__(self, frame_width: int, frame_height: int, logger):
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.logger = logger
 
-        # 深度範囲を調整（1.0mから2.5mに設定。必要に応じて調整）
-        self.min_distance = 1000  # 1000mm = 1.0m
-        self.max_distance = 2500  # 2500mm = 2.5m
+        # 深度閾値設定（ミリメートル）
+        self.obstacle_distance_threshold = 900  # 0.9メートル以内を障害物とみなす
+        self.safe_floor_max_distance = 5000  # 最大深度（ミリメートル）
 
-        # バウンディングボックスフィルタリングの閾値
-        self.max_box_height_ratio = 0.6  # フレーム高さの60%を超えるボックスは除外
-        self.max_aspect_ratio = 3.0  # アスペクト比が3.0を超えるボックスは除外
+        # 壁除外マージン（ピクセル）
+        self.wall_exclusion_margin = 50
 
-    def preprocess_depth(self, roi_depth):
-        """深度ROIを前処理する関数
+        # ロボットが通れる最小の幅（ピクセル）
+        self.min_safe_width = 50  # 例: 50ピクセル
 
-        Args:
-            roi_depth (numpy.ndarray): 深度フレームのROI
+    def create_obstacle_mask(
+        self, depth_clipped: np.ndarray, target_bboxes: List[List[int]]
+    ) -> np.ndarray:
+        # ノイズ削減のためガウシアンブラーを適用
+        depth_blurred = cv2.GaussianBlur(depth_clipped, (5, 5), 0)
 
-        Returns:
-            numpy.ndarray: 前処理済みの深度フレーム
+        obstacle_mask = cv2.inRange(depth_blurred, 0, self.obstacle_distance_threshold)
+
+        # 壁のマージンを除外
+        obstacle_mask[:, : self.wall_exclusion_margin] = 0
+        obstacle_mask[:, -self.wall_exclusion_margin :] = 0
+
+        # 追跡対象を除外
+        for bbox in target_bboxes:
+            x1, y1, x2, y2 = bbox
+            obstacle_mask[y1:y2, x1:x2] = 0
+
+        # ノイズ除去（オープニングとクロージング）
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        obstacle_mask = cv2.morphologyEx(obstacle_mask, cv2.MORPH_OPEN, kernel)
+        obstacle_mask = cv2.morphologyEx(obstacle_mask, cv2.MORPH_CLOSE, kernel)
+
+        return obstacle_mask
+
+    def find_safe_x_coordinate(self, obstacle_mask: np.ndarray, target_x: int) -> int:
         """
-        # ガウシアンブラーとメディアンブラーを適用してノイズを低減
-        roi_depth_blurred = cv2.GaussianBlur(roi_depth, (5, 5), 0)
-        roi_depth_filtered = cv2.medianBlur(roi_depth_blurred, 5)
-        return roi_depth_filtered
-
-    def create_obstacle_mask(self, roi_depth):
-        """障害物マスクを作成する関数
-
-        Args:
-            roi_depth (numpy.ndarray): 前処理済みの深度フレームのROI
-
-        Returns:
-            numpy.ndarray: 障害物マスク
-        """
-        # 深度範囲内のピクセルをマスク
-        mask = cv2.inRange(roi_depth, self.min_distance, self.max_distance)
-        return mask
-
-    def apply_morphology(self, obstacle_mask):
-        """モルフォロジー処理を適用する関数
+        障害物マスクから安全な領域を検出し、対象のX座標に最も近い安全なX座標を返す。
 
         Args:
             obstacle_mask (numpy.ndarray): 障害物マスク
+            target_x (int): 追跡対象のX座標（画面中心が0、左が負、右が正）
 
         Returns:
-            numpy.ndarray: 処理後の障害物マスク
+            int: 安全なX座標（画面中心が0、左が負、右が正）
         """
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        # クロージングとオープニングを適用してノイズを除去
-        obstacle_image_processed = cv2.morphologyEx(
-            obstacle_mask, cv2.MORPH_CLOSE, kernel
-        )
-        obstacle_image_processed = cv2.morphologyEx(
-            obstacle_image_processed, cv2.MORPH_OPEN, kernel
-        )
-        return obstacle_image_processed
+        # 各X座標ごとの障害物ピクセル数を計算
+        obstacle_columns = np.sum(obstacle_mask, axis=0)
 
-    def find_obstacle_contours(self, obstacle_image):
-        """障害物の輪郭を検出する関数
+        # 障害物がない（ピクセル値が0）のX座標を特定
+        safe_columns = obstacle_columns == 0
 
-        Args:
-            obstacle_image (numpy.ndarray): 処理後の障害物マスク
+        # 壁のマージンを除外
+        safe_columns[: self.wall_exclusion_margin] = False
+        safe_columns[-self.wall_exclusion_margin :] = False
 
-        Returns:
-            list: 検出された輪郭のリスト
-        """
-        contours, _ = cv2.findContours(
-            obstacle_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        return contours
+        # 安全な領域を見つける
+        safe_regions = []
+        start_idx = None
+        for idx, is_safe in enumerate(safe_columns):
+            if is_safe and start_idx is None:
+                start_idx = idx
+            elif not is_safe and start_idx is not None:
+                end_idx = idx - 1
+                width = end_idx - start_idx + 1
+                if width >= self.min_safe_width:
+                    safe_regions.append((start_idx, end_idx))
+                start_idx = None
+        # 最後まで安全な領域が続いていた場合
+        if start_idx is not None:
+            end_idx = len(safe_columns) - 1
+            width = end_idx - start_idx + 1
+            if width >= self.min_safe_width:
+                safe_regions.append((start_idx, end_idx))
 
-    def merge_bounding_boxes(self, boxes, distance_threshold=50):
-        """近接するバウンディングボックスを統合する簡単な手法
-
-        Args:
-            boxes (List[List[int]]): バウンディングボックスのリスト
-            distance_threshold (int): ボックス間の最大距離
-
-        Returns:
-            List[List[int]]: 統合後のバウンディングボックスのリスト
-        """
-        merged_boxes = []
-        for box in boxes:
-            if not merged_boxes:
-                merged_boxes.append(box)
-                continue
-
-            merged = False
-            for m_box in merged_boxes:
-                # 中心点を計算
-                m_center = ((m_box[0] + m_box[2]) / 2, (m_box[1] + m_box[3]) / 2)
-                box_center = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
-                distance = math.hypot(
-                    m_center[0] - box_center[0], m_center[1] - box_center[1]
-                )
-
-                if distance < distance_threshold:
-                    # ボックスを統合
-                    m_box[0] = min(m_box[0], box[0])
-                    m_box[1] = min(m_box[1], box[1])
-                    m_box[2] = max(m_box[2], box[2])
-                    m_box[3] = max(m_box[3], box[3])
-                    merged = True
-                    break
-
-            if not merged:
-                merged_boxes.append(box)
-
-        return merged_boxes
-
-    def process_contours(self, contours, roi_color, center_x):
-        """輪郭を処理して情報を取得する関数
-
-        Args:
-            contours (list): 検出された輪郭のリスト
-            roi_color (numpy.ndarray): カラーフレームのROI
-            center_x (int): ROIの中心X座標
-
-        Returns:
-            tuple: (障害物がないか, 安全なX座標)
-        """
-        no_obstacle_detected = True
-        detected_obstacles_info = []
-
-        # 各輪郭のバウンディングボックスを取得
-        bounding_boxes = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 1500:
-                x, y, w, h = cv2.boundingRect(contour)
-
-                # バウンディングボックスの高さ比とアスペクト比を計算
-                height_ratio = h / self.frame_height
-                aspect_ratio = w / h if h > 0 else 0
-
-                # 高さ比とアスペクト比に基づいてフィルタリング
-                if (
-                    height_ratio < self.max_box_height_ratio
-                    and aspect_ratio < self.max_aspect_ratio
-                ):
-                    bounding_boxes.append([x, y, x + w, y + h])
-                else:
-                    self.logger.debug(
-                        f"Excluded bounding box due to size or aspect ratio: x={x}, y={y}, w={w}, h={h}, "
-                        f"height_ratio={height_ratio:.2f}, aspect_ratio={aspect_ratio:.2f}"
-                    )
-
-        # バウンディングボックスを近いもの同士で統合
-        bounding_boxes = self.merge_bounding_boxes(bounding_boxes)
-
-        for box in bounding_boxes:
-            x1, y1, x2, y2 = box
-            w = x2 - x1
-            h = y2 - y1
-
-            obstacle_center_x = x1 + w // 2
-            distance_to_center = obstacle_center_x - center_x
-
-            detected_obstacles_info.append((x1, y1, w, h, distance_to_center))
-            no_obstacle_detected = False
-
-            # 障害物を描画
-            cv2.rectangle(roi_color, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            text_org = (x1, y1 - 10)
-            cv2.putText(
-                roi_color,
-                f"OBSTACLE X:{distance_to_center}",
-                text_org,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 255),
-                1,
+        if not safe_regions:
+            # 安全な領域がない場合、対象の位置に基づいて左端または右端を選択
+            self.logger.debug("No safe regions found.")
+            if target_x < 0:
+                # 対象が左側にいる場合、左端を選択
+                safe_x = -self.frame_width // 2
+            else:
+                # 対象が右側にいる場合、右端を選択
+                safe_x = self.frame_width // 2
+            self.logger.debug(
+                f"Defaulting Safe X to {safe_x} based on target position."
             )
+            return safe_x
 
-        # 障害物のX座標を計算
-        if detected_obstacles_info:
-            all_obstacle_x_positions = [
-                info[0] + info[2] // 2 for info in detected_obstacles_info
-            ]
-            min_obstacle_x = min(all_obstacle_x_positions)
-            max_obstacle_x = max(all_obstacle_x_positions)
-            obstacle_free_center_x = (min_obstacle_x + max_obstacle_x) // 2
-        else:
-            obstacle_free_center_x = center_x
+        # 各安全な領域の中心X座標を計算
+        safe_centers = [(start + end) // 2 for start, end in safe_regions]
 
-        # フレームの中心を基準にX座標を調整
-        obstacle_free_center_x = math.floor(
-            obstacle_free_center_x - self.frame_width / 2
-        )
+        # X座標を画面中心が0、左が負、右が正に変換
+        safe_centers = [x - self.frame_width // 2 for x in safe_centers]
 
-        return no_obstacle_detected, obstacle_free_center_x
+        # 追跡対象のX座標に最も近い安全な領域を選択
+        closest_safe_x = min(safe_centers, key=lambda x: abs(x - target_x))
 
-    def process_obstacles(self, frame, depth_image=None):
-        """障害物を検知し、描画
+        self.logger.debug(f"Safe regions: {safe_regions}")
+        self.logger.debug(f"Safe centers: {safe_centers}")
+        self.logger.debug(f"Selected Safe X: {closest_safe_x}")
+
+        return closest_safe_x
+
+    def visualize_depth_and_obstacles(
+        self,
+        depth_image: np.ndarray,
+        obstacle_mask: np.ndarray,
+        safe_x: int,
+    ) -> np.ndarray:
+        """深度情報と障害物を視覚化し、結果を0.35倍にリサイズして返す
 
         Args:
-            frame (numpy.ndarray): フレーム
-            depth_image (numpy.ndarray, optional): 深度フレーム
+            depth_image (numpy.ndarray): 深度画像
+            obstacle_mask (numpy.ndarray): 障害物マスク
+            safe_x (int): 安全なX座標（画面中心が0、左が負、右が正）
 
         Returns:
-            tuple: (描画後フレーム, 障害物がないか, 安全なX座標)
+            numpy.ndarray: リサイズされた視覚化画像
+        """
+        if depth_image is None:
+            self.logger.warning("Depth image is None. Cannot visualize depth.")
+            return None
+
+        # 深度画像をグレースケールに正規化（手前が白、奥が黒）
+        depth_normalized = cv2.normalize(depth_image, None, 255, 0, cv2.NORM_MINMAX)
+        depth_gray = depth_normalized.astype(np.uint8)
+        depth_bgr = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
+
+        # 障害物を赤色でオーバーレイ
+        if cv2.countNonZero(obstacle_mask) > 0:
+            red_overlay = np.zeros_like(depth_bgr, dtype=np.uint8)
+            red_overlay[:] = (0, 0, 255)  # BGR形式で赤色
+            mask_red = cv2.merge([obstacle_mask, obstacle_mask, obstacle_mask])
+            depth_bgr = np.where(mask_red == 255, red_overlay, depth_bgr)
+
+        # 安全なX座標を緑色の線で表示（BGR形式）
+        # safe_x を画面座標に変換
+        safe_x_screen = safe_x + self.frame_width // 2
+
+        cv2.line(
+            depth_bgr,
+            (safe_x_screen, 0),
+            (safe_x_screen, self.frame_height),
+            (0, 255, 0),  # BGR形式で緑色
+            2,
+        )
+        cv2.putText(
+            depth_bgr,
+            f"Safe X: {safe_x}",
+            (safe_x_screen + 10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),  # BGR形式で緑色
+            2,
+        )
+
+        # 画像を0.35倍にリサイズ
+        scale_factor = 0.35
+        resized_depth_bgr = cv2.resize(
+            depth_bgr,
+            (0, 0),
+            fx=scale_factor,
+            fy=scale_factor,
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+        return resized_depth_bgr
+
+    def process_obstacles(
+        self,
+        frame: np.ndarray,
+        depth_image: np.ndarray = None,
+        target_bboxes: List[List[int]] = [],
+        target_x: Optional[int] = None,
+    ) -> Tuple[np.ndarray, bool, int, Optional[np.ndarray]]:
+        """障害物を処理し、視覚化画像を返す
+
+        Args:
+            frame (numpy.ndarray): フレーム画像
+            depth_image (numpy.ndarray, optional): 深度画像. Defaults to None.
+            target_bboxes (List[List[int]], optional): 対象のバウンディングボックス. Defaults to [].
+            target_x (int, optional): 対象のX座標（画面中心が0、左が負、右が正）. Defaults to None.
+
+        Returns:
+            Tuple[numpy.ndarray, bool, int, Optional[numpy.ndarray]]: フレーム画像、障害物の有無、障害物回避の中心X座標（画面中心が0、左が負、右が正）、視覚化画像
         """
         if depth_image is not None:
-            roi_depth_filtered = self.preprocess_depth(depth_image)
-            obstacle_mask = self.create_obstacle_mask(roi_depth_filtered)
-            obstacle_mask_processed = self.apply_morphology(obstacle_mask)
-            contours = self.find_obstacle_contours(obstacle_mask_processed)
+            depth_clipped = np.clip(depth_image, 0, self.safe_floor_max_distance)
+
+            obstacle_mask = self.create_obstacle_mask(depth_clipped, target_bboxes)
+
+            # target_x が渡されていない場合は中央をデフォルトとする
+            if target_x is None:
+                target_x = 0  # 画面中心が0
+
+            # Safe Xを計算
+            safe_x = self.find_safe_x_coordinate(obstacle_mask, target_x)
+            self.logger.debug(f"Calculated Safe X: {safe_x}")
+
+            depth_frame = self.visualize_depth_and_obstacles(
+                depth_clipped, obstacle_mask, safe_x
+            )
+
+            obstacle_present = np.any(obstacle_mask == 255)
+
+            return frame, not obstacle_present, safe_x, depth_frame
         else:
-            # 深度画像がない場合はカラー画像のみで処理
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            _, obstacle_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
-            obstacle_mask_processed = self.apply_morphology(obstacle_mask)
-            contours = self.find_obstacle_contours(obstacle_mask_processed)
-
-        center_x = frame.shape[1] // 2
-
-        no_obstacle_detected, obstacle_free_center_x = self.process_contours(
-            contours, frame, center_x
-        )
-        return frame, no_obstacle_detected, obstacle_free_center_x
+            return frame, True, 0, None  # 画面中心が0
