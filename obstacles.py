@@ -18,7 +18,8 @@ class Obstacles:
         min_obstacle_size: Tuple[int, int] = (30, 30),  # (縦, 横) ピクセル
         max_obstacle_size: Tuple[int, int] = (300, 300),  # (縦, 横) ピクセル
         consecutive_overlap_pixels: int = 20,
-        depth_difference_threshold: float = 70.0,  # ミリメートル
+        depth_difference_threshold: float = 200.0,  # 平均深度 ±20cm
+        obstacle_person_distance: float = 200.0,  # 人から25cm近いもの
     ):
         """
         初期化メソッド
@@ -34,6 +35,7 @@ class Obstacles:
             max_obstacle_size (Tuple[int, int], optional): 障害物と認識する最大の縦横サイズ（ピクセル）
             consecutive_overlap_pixels (int, optional): 重なりとみなす連続ピクセル数
             depth_difference_threshold (float, optional): 深度差の閾値（ミリメートル）
+            obstacle_person_distance (float, optional): 人から近いとみなす深度差（ミリメートル）
         """
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -46,6 +48,7 @@ class Obstacles:
         self.max_obstacle_size = max_obstacle_size
         self.consecutive_overlap_pixels = consecutive_overlap_pixels
         self.depth_difference_threshold = depth_difference_threshold
+        self.obstacle_person_distance = obstacle_person_distance
 
         self.last_target_x: Optional[int] = None
 
@@ -60,7 +63,7 @@ class Obstacles:
 
         Args:
             depth_image (numpy.ndarray): 深度画像（左右反転済み）
-            target_bboxes (List[List[int]], optional): 対象のバウンディングボックス。各バウンディングボックスは [x1, y1, x2, y2]。
+            target_bboxes (List[List[int]], optional): 対象のバウンディングボックスリスト。各バウンディングボックスは [x1, y1, x2, y2]。
             target_x (int, optional): ターゲットのX座標（画面中心が0、左が負、右が正）
 
         Returns:
@@ -130,18 +133,15 @@ class Obstacles:
             # 人の検出
             person_mask = self.detect_person_contour(depth_filtered, target_bboxes)
             if person_mask is not None:
-                self.logger.debug("Person detected using contour.")
-                # 人の下部の領域を障害物とする
-                obstacle_below_person = self.get_obstacles_below_person(
-                    person_mask, depth_filtered.shape
+                self.logger.debug("Person detected using depth contour.")
+
+                # 人と障害物の平均深度を比較して、重なっている障害物を検出
+                overlapping_labels = self.find_overlapping_obstacles(
+                    depth_filtered, labels, person_mask
                 )
-                if obstacle_below_person is not None:
-                    overlapping_labels = self.get_labels_from_mask(
-                        obstacle_below_person, labels
-                    )
-                    if overlapping_labels:
-                        obstacle_present = True
-                        self.logger.debug("Obstacles detected below person.")
+                if overlapping_labels:
+                    obstacle_present = True
+                    self.logger.debug("Obstacles detected overlapping with person.")
             else:
                 self.logger.debug("No person detected.")
                 obstacle_present = False
@@ -172,16 +172,15 @@ class Obstacles:
         self, depth_filtered: np.ndarray, target_bboxes: List[List[int]]
     ) -> Optional[np.ndarray]:
         """
-        人の輪郭を検出し、マスクを返す
+        深度情報を用いて、人の輪郭を検出し、マスクを返す
 
         Args:
             depth_filtered (numpy.ndarray): フィルタリング済みの深度画像
             target_bboxes (List[List[int]]): 対象のバウンディングボックスリスト
 
         Returns:
-            Optional[np.ndarray]: 人のマスク
+            Optional[numpy.ndarray]: 人のマスク
         """
-        # ここでは最初のバウンディングボックスを使用
         if not target_bboxes:
             self.logger.debug("No target bounding boxes provided.")
             return None
@@ -189,86 +188,85 @@ class Obstacles:
         x1, y1, x2, y2 = target_bboxes[0]
         self.logger.debug(f"Using bounding box: {(x1, y1, x2, y2)}")
 
-        # 人の領域を抽出
+        # バウンディングボックス内の平均深度を計算
         person_roi = depth_filtered[y1:y2, x1:x2]
-
-        # 人の領域を正規化して8ビットに変換
-        person_roi_normalized = cv2.normalize(
-            person_roi, None, 0, 255, cv2.NORM_MINMAX
-        ).astype(np.uint8)
-
-        # 二値化
-        _, person_mask = cv2.threshold(
-            person_roi_normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-
-        # 輪郭検出
-        contours, _ = cv2.findContours(
-            person_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        if not contours:
-            self.logger.debug("No contours found in person ROI.")
+        if person_roi.size == 0:
+            self.logger.debug("Person ROI is empty.")
             return None
 
-        # 最大の輪郭を人とみなす
-        largest_contour = max(contours, key=cv2.contourArea)
+        person_depth = np.nanmean(person_roi)
+        self.logger.debug(f"Person average depth: {person_depth}")
 
-        # 人のマスクを作成
-        person_mask_full = np.zeros(depth_filtered.shape, dtype=np.uint8)
-        cv2.drawContours(
-            person_mask_full[y1:y2, x1:x2],
-            [largest_contour],
-            -1,
-            color=255,
-            thickness=cv2.FILLED,
+        # 深度画像全体から、平均深度 ±15cm の範囲のピクセルをマスク
+        depth_diff = np.abs(depth_filtered - person_depth)
+        person_mask_initial = depth_diff <= self.depth_difference_threshold
+
+        # 連結成分を取得
+        num_labels, labels = cv2.connectedComponents(
+            person_mask_initial.astype(np.uint8), connectivity=8
         )
+        self.logger.debug(f"Connected components in person mask: {num_labels}")
 
-        return person_mask_full.astype(bool)
+        # ラベルごとの平均深度を計算し、同一の人や障害物の判定基準（±15cm）を適用
+        person_labels = []
+        for label in range(1, num_labels):
+            label_mask = labels == label
+            label_depth = np.nanmean(depth_filtered[label_mask])
+            if np.abs(label_depth - person_depth) <= self.depth_difference_threshold:
+                person_labels.append(label)
 
-    def get_obstacles_below_person(
-        self, person_mask: np.ndarray, image_shape: Tuple[int, int]
-    ) -> Optional[np.ndarray]:
-        """
-        人の輪郭線より下の領域を障害物とみなす
-
-        Args:
-            person_mask (np.ndarray): 人のマスク
-            image_shape (Tuple[int, int]): 画像の形状
-
-        Returns:
-            Optional[np.ndarray]: 障害物のマスク
-        """
-        # 人の下端の座標を取得
-        ys, xs = np.where(person_mask)
-        if ys.size == 0:
-            self.logger.debug("Person mask is empty.")
+        if not person_labels:
+            self.logger.debug("No labels within depth threshold for person.")
             return None
 
-        bottom_y = ys.max()
-        self.logger.debug(f"Bottom Y coordinate of person: {bottom_y}")
+        # 人のマスクを作成（複数のラベルを含む場合もある）
+        person_mask = np.isin(labels, person_labels)
+        self.logger.debug(f"Person labels determined: {person_labels}")
 
-        # 人の下の領域を障害物とする
-        obstacle_mask = np.zeros(image_shape, dtype=bool)
-        obstacle_mask[bottom_y + 1 :, :] = True
+        return person_mask
 
-        return obstacle_mask
-
-    def get_labels_from_mask(self, mask: np.ndarray, labels: np.ndarray) -> List[int]:
+    def find_overlapping_obstacles(
+        self,
+        depth_filtered: np.ndarray,
+        labels: np.ndarray,
+        person_mask: np.ndarray,
+    ) -> List[int]:
         """
-        マスク内のラベルを取得
+        人と重なっている障害物のラベルを検出
 
         Args:
-            mask (np.ndarray): マスク
+            depth_filtered (np.ndarray): フィルタリング済みの深度画像
             labels (np.ndarray): ラベルマップ
+            person_mask (np.ndarray): 人のマスク
 
         Returns:
-            List[int]: マスク内のラベルリスト
+            List[int]: 重なっている障害物のラベルリスト
         """
-        label_values = np.unique(labels[mask])
-        label_values = label_values[label_values != 0]  # 背景ラベルを除外
-        self.logger.debug(f"Labels in mask: {label_values}")
-        return label_values.tolist()
+        # 人の平均深度を再計算
+        person_depth = np.nanmean(depth_filtered[person_mask])
+        self.logger.debug(f"Person depth for overlapping detection: {person_depth}")
+
+        overlapping_labels = []
+        # 障害物ラベルのリストを取得
+        unique_labels = np.unique(labels[labels > 0])
+
+        for label in unique_labels:
+            if label == 0:
+                continue
+            obstacle_mask = labels == label
+            # 障害物と人のマスクの重なりを確認
+            overlap = np.logical_and(person_mask, obstacle_mask)
+            if np.any(overlap):
+                # 障害物の平均深度を計算
+                obstacle_depth = np.nanmean(depth_filtered[obstacle_mask])
+                depth_diff = person_depth - obstacle_depth
+                if depth_diff >= self.obstacle_person_distance:
+                    overlapping_labels.append(label)
+                    self.logger.debug(
+                        f"Obstacle label {label} overlaps with person and is {depth_diff}mm closer."
+                    )
+
+        return overlapping_labels
 
     def filter_obstacles(
         self, obstacle_mask: np.ndarray
@@ -294,7 +292,7 @@ class Obstacles:
             & (stats[:, cv2.CC_STAT_WIDTH] <= self.max_obstacle_size[1])
             & (stats[:, cv2.CC_STAT_HEIGHT] <= self.max_obstacle_size[0])
         )
-        mask[0] = 0  # ラベル0は背景
+        mask[0] = False  # ラベル0は背景
 
         filtered_mask = mask[labels]
         kept_labels = np.unique(labels[filtered_mask])
@@ -303,27 +301,10 @@ class Obstacles:
             f"Filtered obstacles based on size. Labels kept: {kept_labels}"
         )
 
-        return filtered_mask, labels, stats
+        # フィルタリング後の障害物マスクを作成
+        obstacle_mask_filtered = np.isin(labels, kept_labels)
 
-    def find_safe_x(
-        self,
-        depth_filtered: np.ndarray,
-        safe_x_screen: int,
-        obstacle_mask_cleaned: np.ndarray,
-    ) -> int:
-        """
-        安全なX座標を見つける（詳細な実装は省略）
-
-        Args:
-            depth_filtered (numpy.ndarray): ノイズ除去された深度画像
-            safe_x_screen (int): 現在のSafe Xの画面座標
-            obstacle_mask_cleaned (numpy.ndarray): フィルタリング後の障害物マスク
-
-        Returns:
-            int: 新しい安全なX座標（画面座標）
-        """
-        # ここでは簡略化のため、現在のsafe_x_screenを返す
-        return safe_x_screen
+        return obstacle_mask_filtered, labels, stats
 
     def visualize_depth(
         self,
@@ -368,6 +349,8 @@ class Obstacles:
         obstacle_mask = labels > 0
         for label in overlapping_labels:
             obstacle_mask[labels == label] = False  # 重なっている障害物は後で色付け
+        if person_mask is not None:
+            obstacle_mask = obstacle_mask & (~person_mask)  # 人のマスクを除外
         visualization_image[obstacle_mask] = [255, 0, 0]  # 赤色 (RGB)
         self.logger.debug("Other obstacles colored red.")
 
@@ -412,3 +395,23 @@ class Obstacles:
         )
 
         return resized_visualization_image
+
+    def find_safe_x(
+        self,
+        depth_filtered: np.ndarray,
+        safe_x_screen: int,
+        obstacle_mask_cleaned: np.ndarray,
+    ) -> int:
+        """
+        安全なX座標を見つける（詳細な実装は省略）
+
+        Args:
+            depth_filtered (numpy.ndarray): ノイズ除去された深度画像
+            safe_x_screen (int): 現在のSafe Xの画面座標
+            obstacle_mask_cleaned (numpy.ndarray): フィルタリング後の障害物マスク
+
+        Returns:
+            int: 新しい安全なX座標（画面座標）
+        """
+        # ここでは簡略化のため、現在のsafe_x_screenを返す
+        return safe_x_screen
