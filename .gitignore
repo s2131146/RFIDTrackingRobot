@@ -881,3 +881,5 @@ models/yolov8x.pt
 models/yolov10n.pt
 models/yolov10x.pt
 robot.log
+temp_tracker.avi
+tracker.avi

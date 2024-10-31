@@ -594,9 +594,9 @@ class Tracker:
                     self.execute_rfid_direction()
 
         if not DEBUG_USE_ONLY_WEBCAM and DEBUG_DETECT_OBSTACLES:
-            self.frame, self.no_obs, self.safe_x, self.depth_frame = (
+            self.safe_x, self.no_obs, self.depth_frame = (
                 self.obstacles.process_obstacles(
-                    self.frame, self.serial.depth_image, target_bboxes, self.target_x
+                    self.serial.depth_image, target_bboxes, self.target_x
                 )
             )
 

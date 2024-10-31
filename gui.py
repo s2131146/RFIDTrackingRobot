@@ -651,8 +651,11 @@ class GUI:
             green_intensity = min(255, int(((right_value - 40) / 60) * 255))
             color_r = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
 
-        canvas_r.itemconfig(rect_id_r, fill=color_r)
-        canvas_l.itemconfig(rect_id_l, fill=color_l)
+        try:
+            canvas_r.itemconfig(rect_id_r, fill=color_r)
+            canvas_l.itemconfig(rect_id_l, fill=color_l)
+        except Exception:
+            pass
 
     def __del__(self):
         self.tracker.close()
