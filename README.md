@@ -3,7 +3,8 @@
 RFIDを用いて遮蔽に頑健な人物追跡ロボット
 
 # Installation
-pip install opencv-python-headless numpy ultralytics pyrealsense2 tkinter
+`pip install opencv-python-headless numpy ultralytics pyrealsense2 tkinter mss`
+librariesフォルダの中身を`ドキュメント\libraries`へコピー（なければ作成）
 
 # Environment
 Python 3.10
