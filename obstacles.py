@@ -147,6 +147,8 @@ class Obstacles:
                 if overlapping_labels:
                     # 重なっている障害物が存在する場合、障害物ありとする
                     obstacle_present = True
+                    for label in overlapping_labels:
+                        obstacle_mask_cleaned[labels == label] = True
                     self.logger.debug("Obstacles detected overlapping with person.")
                 else:
                     # 重なっている障害物がない場合、障害物なしとする
@@ -466,20 +468,6 @@ class Obstacles:
         overlapping_labels: List[int],
         person_mask: Optional[np.ndarray],
     ) -> np.ndarray:
-        """
-        深度画像と安全なX座標を視覚化するためのRGB画像を生成する。
-
-        Args:
-            depth_filtered (numpy.ndarray): ノイズ除去された深度画像。
-            safe_x (int): 安全なX座標（画面座標）。
-            labels (numpy.ndarray): 連結成分ラベルマップ。
-            overlapping_labels (List[int]): 人と重なっている障害物のラベル番号リスト。
-            person_mask (Optional[np.ndarray]): 人のマスク。存在しない場合はNone。
-
-        Returns:
-            numpy.ndarray: 視覚化されたRGB画像。
-        """
-        # 深度画像を0から255に正規化
         depth_normalized = cv2.normalize(
             depth_filtered,
             None,
@@ -490,67 +478,52 @@ class Obstacles:
         )
         self.logger.debug("Depth image normalized.")
 
-        # グレースケール画像をRGB形式に変換
         depth_gray_rgb = cv2.cvtColor(depth_normalized, cv2.COLOR_GRAY2RGB)
         self.logger.debug("Depth image converted to RGB grayscale.")
 
-        # 視覚化画像のコピーを作成
         visualization_image = depth_gray_rgb.copy()
 
-        # その他の障害物を赤色で表示
-        # overlapping_labelsに含まれる障害物は後で色付けするため、除外
-        obstacle_mask = labels > 0  # ラベル0（背景）以外を障害物とする
+        obstacle_mask = labels > 0
         for label in overlapping_labels:
             obstacle_mask[labels == label] = False  # 重なっている障害物を除外
         if person_mask is not None:
             obstacle_mask = obstacle_mask & (~person_mask)  # 人のマスクを除外
-        visualization_image[obstacle_mask] = [255, 0, 0]  # 赤色 (RGB)
+        visualization_image[obstacle_mask] = [255, 0, 0]
         self.logger.debug("Other obstacles colored red.")
 
-        # 人と重なっている障害物を黄色で表示
         for label in overlapping_labels:
             overlap_mask = labels == label
-            visualization_image[overlap_mask] = [255, 255, 0]  # 黄色 (RGB)
+            visualization_image[overlap_mask] = [255, 255, 0]  # 黄色
             self.logger.debug(f"Overlapping obstacle Label {label} colored yellow.")
 
-        # 人を青色で表示
         if person_mask is not None:
-            visualization_image[person_mask] = [0, 0, 255]  # 青色 (RGB)
+            visualization_image[person_mask] = [0, 0, 255]
             self.logger.debug("Person colored blue.")
 
-        # 縦方向に障害物が一切存在しない領域を紫色で塗りつぶす
-        # 各列に障害物が存在しないかを確認
-        safe_columns = ~np.any(obstacle_mask, axis=0)  # True: 安全な列
+        safe_columns = ~np.any(obstacle_mask | person_mask if person_mask is not None else obstacle_mask, axis=0)
         self.logger.debug(f"Safe columns identified: {np.sum(safe_columns)}")
 
-        # 安全な列を紫色で塗りつぶす
-        visualization_image[:, safe_columns] = [128, 0, 128]  # 紫色 (RGB)
+        visualization_image[:, safe_columns] = [128, 0, 128]
         self.logger.debug("Safe vertical regions colored purple.")
 
-        # 安全なX座標を緑色の線で表示
         cv2.line(
             visualization_image,
-            (safe_x, 0),  # 線の開始点（X座標, Y座標）
-            (safe_x, self.frame_height),  # 線の終了点（X座標, Y座標）
-            (0, 255, 0),  # 緑色 (RGB)
-            2,  # 線の太さ
+            (safe_x, 0),
+            (safe_x, self.frame_height),
+            (0, 255, 0),
+            2,
         )
-        # 安全なX座標の値をテキストで表示
         cv2.putText(
             visualization_image,
-            f"Safe X: {safe_x - (self.frame_width // 2)}",  # 画面中心基準のX座標
-            (safe_x + 10, 30),  # テキストの位置
-            cv2.FONT_HERSHEY_SIMPLEX,  # フォント
-            0.7,  # フォントサイズ
-            (0, 255, 0),  # 緑色 (RGB)
-            2,  # 太さ
+            f"Safe X: {safe_x - (self.frame_width // 2)}",
+            (safe_x + 10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 0),
+            2,
         )
         self.logger.debug(f"Safe X line and text added at X={safe_x}")
 
-        # デバッグ用ウィンドウや録画を行わない
-
-        # 画像をリサイズ（オプション）
-        # 視覚化画像を0.35倍にリサイズして表示速度を向上
         resized_visualization_image = cv2.resize(
             visualization_image,
             (int(self.frame_width * 0.35), int(self.frame_height * 0.35)),
