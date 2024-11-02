@@ -120,7 +120,7 @@ class Tracker:
         self.is_close = False
 
         self.target_position_str = "X"
-        self.target_x = 0
+        self.target_x = -1
         self.safe_x = 0
 
         self.received_serial = None
@@ -512,7 +512,7 @@ class Tracker:
         self.target_detected = False
         self.target_position_str = "X"
         self.stop_exec_cmd = False
-        self.target_x = 0
+        self.target_x = -1
         self.no_obs = True
         self.safe_x = 0
 
