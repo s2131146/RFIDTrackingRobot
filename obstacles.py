@@ -19,8 +19,8 @@ class Obstacles:
         wall_exclusion_margin: int = 50,
         obstacle_distance_threshold: float = 500.0,  # ミリメートル（調整済み）
         min_safe_width: int = 50,
-        min_obstacle_size: Tuple[int, int] = (50, 40),  # (縦, 横) ピクセル
-        max_obstacle_size: Tuple[int, int] = (300, 300),  # (縦, 横) ピクセル
+        min_obstacle_size: Tuple[int, int] = (70, 40),  # (縦, 横) ピクセル
+        max_obstacle_size: Tuple[int, int] = (640, 480),  # (縦, 横) ピクセル
         consecutive_overlap_pixels: int = 20,
         depth_difference_threshold: float = 200.0,  # 平均深度 ±20cm
         obstacle_person_distance: float = 200.0,  # 人から20cm近いもの
@@ -42,7 +42,7 @@ class Obstacles:
             obstacle_person_distance (float, optional): 人から近いとみなす深度差（ミリメートル）。デフォルトは200.0。
         """
         # フレームの幅と高さを設定
-        self.frame_width = frame_width
+        self.frame_width = frame_width - 25
         self.frame_height = frame_height
 
         # ロガーを設定
@@ -93,21 +93,20 @@ class Obstacles:
             )
             return 0, True, None
 
-        # 深度画像の統計情報をログに出力
-        min_depth = np.min(depth_image)
-        max_depth = np.max(depth_image)
-        mean_depth = np.mean(depth_image)
-        self.logger.debug(f"Depth image stats - min: {min_depth}, max: {max_depth}, mean: {mean_depth}")
-
         # 深度画像を左右反転
         depth_image_flipped = cv2.flip(depth_image, 1)
+        depth_image_flipped = depth_image_flipped[:, :-25]
         self.logger.debug(f"Depth image flipped. Shape: {depth_image_flipped.shape}")
 
+        # 深度画像の統計情報をログに出力
+        min_depth = np.min(depth_image_flipped)
+        max_depth = np.max(depth_image_flipped)
+        mean_depth = np.mean(depth_image_flipped)
+        self.logger.debug(f"Depth image stats - min: {min_depth}, max: {max_depth}, mean: {mean_depth}")
+        
         # メディアンフィルタを適用してノイズを除去
         # フィルタサイズは5x5
-        depth_filtered = cv2.medianBlur(
-            depth_image_flipped.astype(np.uint16), 5
-        ).astype(np.float32)
+        depth_filtered = cv2.medianBlur(depth_image_flipped.astype(np.uint16), 5).astype(np.float32)
         self.logger.debug("Applied median filter to depth image.")
 
         # 障害物マスクを生成
@@ -126,7 +125,7 @@ class Obstacles:
         # 障害物の総ピクセル数をカウント
         total_obstacle_pixels = np.sum(obstacle_mask_cleaned)
         self.logger.debug(f"Total obstacle pixels: {total_obstacle_pixels}")
-
+        
         # 障害物の有無を示すフラグ（初期値はFalse）
         obstacle_present = False
 
@@ -134,49 +133,59 @@ class Obstacles:
         person_mask = None
         overlapping_labels = []
 
-        if target_bboxes and target_x is not None:
-            # ターゲット（人）の検出
-            person_mask = self.detect_person_contour(depth_filtered, target_bboxes)
-            if person_mask is not None:
-                self.logger.debug("Person detected using depth contour.")
-
-                # 人と重なっている障害物のラベルを検出
-                overlapping_labels = self.find_overlapping_obstacles(
-                    depth_filtered, labels, person_mask
-                )
-                if overlapping_labels:
-                    # 重なっている障害物が存在する場合、障害物ありとする
-                    obstacle_present = True
-                    for label in overlapping_labels:
-                        obstacle_mask_cleaned[labels == label] = True
-                    self.logger.debug("Obstacles detected overlapping with person.")
-                else:
-                    # 重なっている障害物がない場合、障害物なしとする
-                    self.logger.debug("No overlapping obstacles detected with person.")
-            else:
-                # 人の検出ができなかった場合、障害物なしとする
-                self.logger.debug("No person detected.")
-                obstacle_present = False
-
-        # 安全なX座標の初期設定
-        if target_bboxes and target_x is not None:
-            # ターゲットが検出されている場合、そのX座標を安全なX座標とする
-            self.logger.debug(f"Target detected at X: {target_x}")
-            self.last_target_x = target_x
-            safe_x = target_x
+        # 端が、障害物で30%以上覆われていた場合、壁
+        left_wall = np.sum(obstacle_mask[:, :self.wall_exclusion_margin]) > (np.sum(depth_filtered[:, :self.wall_exclusion_margin] * 0.3))
+        right_wall = np.sum(obstacle_mask[:, -self.wall_exclusion_margin:]) > (np.sum(depth_filtered[:, -self.wall_exclusion_margin:] * 0.3))
+        wall_detected = left_wall or right_wall
+        
+        if wall_detected:
+            # 壁が検出された場合、safe_x を画面中央に設定して直進
+            safe_x = self.frame_width // 2
+            self.logger.debug("Wall detected. Setting Safe X to screen center for straight movement.")
         else:
-            # ターゲットが検出されていない場合、最後に検出されたターゲットのX座標を使用
-            if self.last_target_x is not None:
-                self.logger.debug(
-                    f"No target detected. Using last_target_x: {self.last_target_x}"
-                )
-                safe_x = self.last_target_x
+            if target_bboxes and target_x is not None:
+                # ターゲット（人）の検出
+                person_mask = self.detect_person_contour(depth_filtered, target_bboxes)
+                if person_mask is not None:
+                    self.logger.debug("Person detected using depth contour.")
+
+                    # 人と重なっている障害物のラベルを検出
+                    overlapping_labels = self.find_overlapping_obstacles(
+                        depth_filtered, labels, person_mask
+                    )
+                    if overlapping_labels:
+                        # 重なっている障害物が存在する場合、障害物ありとする
+                        obstacle_present = True
+                        for label in overlapping_labels:
+                            obstacle_mask_cleaned[labels == label] = True
+                        self.logger.debug("Obstacles detected overlapping with person.")
+                    else:
+                        # 重なっている障害物がない場合、障害物なしとする
+                        self.logger.debug("No overlapping obstacles detected with person.")
+                else:
+                    # 人の検出ができなかった場合、障害物なしとする
+                    self.logger.debug("No person detected.")
+                    obstacle_present = False
+
+            # 安全なX座標の初期設定
+            if target_bboxes and target_x is not None:
+                # ターゲットが検出されている場合、そのX座標を安全なX座標とする
+                self.logger.debug(f"Target detected at X: {target_x}")
+                self.last_target_x = target_x
+                safe_x = target_x
             else:
-                # 最後のターゲットも存在しない場合、画面中央をデフォルトの安全なX座標とする
-                self.logger.debug(
-                    "No target detected and no last_target_x. Defaulting Safe X to center."
-                )
-                safe_x = 0
+                # ターゲットが検出されていない場合、最後に検出されたターゲットのX座標を使用
+                if self.last_target_x is not None:
+                    self.logger.debug(
+                        f"No target detected. Using last_target_x: {self.last_target_x}"
+                    )
+                    safe_x = self.last_target_x
+                else:
+                    # 最後のターゲットも存在しない場合、画面中央をデフォルトの安全なX座標とする
+                    self.logger.debug(
+                        "No target detected and no last_target_x. Defaulting Safe X to center."
+                    )
+                    safe_x = 0
 
         # 安全なX座標を画面座標に変換（画面左端を0として、右端をframe_widthにする）
         safe_x_screen = safe_x + (self.frame_width // 2)
@@ -330,14 +339,14 @@ class Obstacles:
         self, obstacle_mask: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        連結成分分析を使用して、小さな障害物や大きすぎる障害物を除外する。
+        連結成分分析を使用して、障害物マスクを生成する。
 
         Args:
             obstacle_mask (numpy.ndarray): 初期の障害物マスク。
 
         Returns:
             Tuple[numpy.ndarray, np.ndarray, np.ndarray]:
-                - フィルタリング後の障害物マスク。
+                - 障害物マスク（フィルタリングなし）。
                 - ラベルマップ。
                 - 各ラベルの統計情報（面積、バウンディングボックスなど）。
         """
@@ -347,30 +356,11 @@ class Obstacles:
         )
         self.logger.debug(f"Connected components found: {num_labels}")
 
-        # 各ラベルのサイズを基にフィルタリングマスクを作成
-        # フレームの幅と高さが最小および最大サイズ基準を満たしているか確認
-        mask = (
-            (stats[:, cv2.CC_STAT_WIDTH] >= self.min_obstacle_size[1])  # 幅が最小以上
-            & (stats[:, cv2.CC_STAT_HEIGHT] >= self.min_obstacle_size[0])  # 高さが最小以上
-            & (stats[:, cv2.CC_STAT_WIDTH] <= self.max_obstacle_size[1])  # 幅が最大以下
-            & (stats[:, cv2.CC_STAT_HEIGHT] <= self.max_obstacle_size[0])  # 高さが最大以下
-        )
-        mask[0] = False  # ラベル0は背景なので除外
-
-        # フィルタリングマスクをラベルマップに適用
-        filtered_mask = mask[labels]
-
-        # フィルタリングされたラベルを取得
-        kept_labels = np.unique(labels[filtered_mask])
-        kept_labels = kept_labels[kept_labels != 0]  # ラベル0（背景）は除外
-        self.logger.debug(
-            f"Filtered obstacles based on size. Labels kept: {kept_labels}"
-        )
-
-        # フィルタリング後の障害物マスクを作成
-        obstacle_mask_filtered = np.isin(labels, kept_labels)
+        # すべての障害物をそのままマスクとして返す
+        obstacle_mask_filtered = labels > 0  # ラベル0（背景）を除外
 
         return obstacle_mask_filtered, labels, stats
+
 
     def find_safe_x(
         self,
@@ -467,6 +457,7 @@ class Obstacles:
         labels: np.ndarray,
         overlapping_labels: List[int],
         person_mask: Optional[np.ndarray],
+        central_safe_mode: bool = False  # 中央に向かうモードかどうかのフラグ
     ) -> np.ndarray:
         depth_normalized = cv2.normalize(
             depth_filtered,
@@ -483,6 +474,7 @@ class Obstacles:
 
         visualization_image = depth_gray_rgb.copy()
 
+        # 障害物の描画
         obstacle_mask = labels > 0
         for label in overlapping_labels:
             obstacle_mask[labels == label] = False  # 重なっている障害物を除外
@@ -491,38 +483,51 @@ class Obstacles:
         visualization_image[obstacle_mask] = [255, 0, 0]
         self.logger.debug("Other obstacles colored red.")
 
+        # 重なっている障害物を黄色で表示
         for label in overlapping_labels:
             overlap_mask = labels == label
             visualization_image[overlap_mask] = [255, 255, 0]  # 黄色
             self.logger.debug(f"Overlapping obstacle Label {label} colored yellow.")
 
+        # 人を青色で表示
         if person_mask is not None:
             visualization_image[person_mask] = [0, 0, 255]
             self.logger.debug("Person colored blue.")
 
+        # 安全な列の判定（壁がある場合に紫色の安全領域を半透明に設定）
         safe_columns = ~np.any(obstacle_mask | person_mask if person_mask is not None else obstacle_mask, axis=0)
         self.logger.debug(f"Safe columns identified: {np.sum(safe_columns)}")
 
-        visualization_image[:, safe_columns] = [128, 0, 128]
-        self.logger.debug("Safe vertical regions colored purple.")
+        # 紫色（半透明）の安全領域を設定
+        overlay = visualization_image.copy()
+        overlay[:, safe_columns] = [128, 0, 128]  # 紫色
+        alpha = 0.5  # 半透明のための透明度
+        cv2.addWeighted(overlay, alpha, visualization_image, 1 - alpha, 0, visualization_image)
+        self.logger.debug("Safe vertical regions colored purple with transparency.")
 
+        # `safe_x` のラインとテキストの色を中央向きかどうかで切り替え
+        line_color = (0, 165, 255) if central_safe_mode else (0, 255, 0)  # オレンジまたは緑
+        text_color = line_color
+
+        # 安全なX座標をオレンジ色または緑色の線で表示
         cv2.line(
             visualization_image,
             (safe_x, 0),
             (safe_x, self.frame_height),
-            (0, 255, 0),
+            line_color,
             2,
         )
+        # 安全なX座標の値をテキストで表示
         cv2.putText(
             visualization_image,
             f"Safe X: {safe_x - (self.frame_width // 2)}",
             (safe_x + 10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
-            (0, 255, 0),
+            text_color,
             2,
         )
-        self.logger.debug(f"Safe X line and text added at X={safe_x}")
+        self.logger.debug(f"Safe X line and text added at X={safe_x} with color {line_color}")
 
         resized_visualization_image = cv2.resize(
             visualization_image,
