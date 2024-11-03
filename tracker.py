@@ -35,7 +35,7 @@ TCP_PORT = 8001
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 
-CAM_NO = 3
+CAM_NO = 0
 
 DEBUG_SERIAL = True
 DEBUG_USE_ONLY_WEBCAM = False
@@ -53,11 +53,6 @@ class Tracker:
         CAM_ONLY = 1
         DUAL = 2
         RFID_ONLY = 3
-
-    class State(Enum):
-        FOLLOW_TARGET = 1
-        AVOID_OBSTACLE = 2
-        TURN_TOWARDS_TARGET = 3
 
     def __init__(self):
         self.root = self.video_capture = None
@@ -176,16 +171,37 @@ class Tracker:
         Args:
             text (str): 出力文字列
         """
+        overlay = self.frame.copy()  # 元のフレームをコピーしてオーバーレイを作成
+        alpha = 0.6  # 半透明の背景の透明度（0.0は完全透明、1.0は完全不透明）
+
         text_lines = text.split("\n")
         for index, line in enumerate(text_lines, start=1):
+            # 文字のサイズを取得
+            (text_width, text_height), baseline = cv2.getTextSize(
+                line, cv2.FONT_HERSHEY_COMPLEX, 0.5, 1
+            )
+            
+            # 背景の四角形の座標を計算
+            top_left = (5, 15 * index - text_height - baseline // 2)
+            bottom_right = (5 + text_width, 15 * index + baseline)
+
+            # 半透明の白い背景をオーバーレイに描画
+            cv2.rectangle(overlay, top_left, bottom_right, (255, 255, 255), -1)
+            
+            # 文字をオーバーレイに描画
             cv2.putText(
-                self.frame,
+                overlay,
                 line,
                 (5, 15 * index),
                 cv2.FONT_HERSHEY_COMPLEX,
                 0.5,
                 (0, 0, 0),
+                1,
             )
+
+        # 元のフレームとオーバーレイを合成して半透明の背景を作成
+        cv2.addWeighted(overlay, alpha, self.frame, 1 - alpha, 0, self.frame)
+
 
     def print_key_binds(self):
         """キーバインドを出力
@@ -287,6 +303,8 @@ class Tracker:
         c = self.serial.command_sent.upper()
         if c == Commands.STOP:
             self.stop = True
+            self.motor_power_l = 0
+            self.motor_power_r = 0
             self.lost_target_command = Commands.STOP_TEMP
             self.gui.update_stop()
             logger.info("Motor stopped")
@@ -294,6 +312,8 @@ class Tracker:
             self.start_motor()
             logger.info("Motor started")
         elif c == Commands.STOP_TEMP:
+            self.motor_power_l = 0
+            self.motor_power_r = 0
             self.stop_temp = True
 
     def avoid_obstacle(self):
@@ -422,8 +442,8 @@ class Tracker:
         self.motor_power_r = int(self.motor_power_r)
 
         # 障害物が検出された場合、状態を変更
-        if not self.no_obs:
-            self.avoid_obstacle()
+        if not self.no_obs and not obs:
+            self.calculate_motor_power(self.safe_x, True)
 
     def get_target_pos_str(self, target_center_x):
         return self.target_processor.get_target_pos_str(target_center_x)
@@ -490,10 +510,9 @@ class Tracker:
         self.sent_count = 0
 
     def update_motor_power(self):
-        if not self.stop and not self.stop_temp:
-            self.gui.root.after(
-                0, self.gui.update_motor_values, self.motor_power_l, self.motor_power_r
-            )
+        self.gui.root.after(
+            0, self.gui.update_motor_values, self.motor_power_l, self.motor_power_r
+        )
 
     def update_rfid_power(self):
         if self.RFID_ENABLED and self.rfid_accessing:
@@ -575,7 +594,6 @@ class Tracker:
                             self.target_position_str = self.get_target_pos_str(
                                 target_center_x
                             )
-                            self.calculate_motor_power(self.target_x)
             elif len(detected_targets) == 0:
                 if self.target_detection_start_time is not None:
                     self.target_detection_start_time = None
@@ -586,8 +604,10 @@ class Tracker:
                         self.execute_rfid_direction()
                     else:
                         if not self.stop:
-                            self.stop_exec_cmd = True
                             self.send(self.lost_target_command)
+                            self.stop_exec_cmd = True
+                            self.motor_power_l = 0
+                            self.motor_power_r = 0
 
             else:
                 if self.RFID_ENABLED:
@@ -599,6 +619,9 @@ class Tracker:
                     self.serial.depth_image, target_bboxes, self.target_x
                 )
             )
+            
+        if self.target_x != -1:
+            self.calculate_motor_power(self.target_x)
 
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
             self.target_position_str = self.rfid_reader.get_direction()

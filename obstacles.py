@@ -22,8 +22,8 @@ class Obstacles:
         min_obstacle_size: Tuple[int, int] = (70, 40),  # (縦, 横) ピクセル
         max_obstacle_size: Tuple[int, int] = (640, 480),  # (縦, 横) ピクセル
         consecutive_overlap_pixels: int = 20,
-        depth_difference_threshold: float = 200.0,  # 平均深度 ±20cm
-        obstacle_person_distance: float = 200.0,  # 人から20cm近いもの
+        depth_difference_threshold: float = 250.0,  # 平均深度 ±20cm
+        obstacle_person_distance: float = 300.0,  # 人から25cm近いもの
     ):
         """
         クラスの初期化メソッド。
@@ -59,13 +59,14 @@ class Obstacles:
         self.obstacle_person_distance = obstacle_person_distance
 
         # 最後に検出されたターゲットのX座標を保持（初期値はNone）
-        self.last_target_x: Optional[int] = None
+        self.last_target_x: Optional[int] = 0
+        self.last_safe_x = self.frame_width // 2
 
     def process_obstacles(
         self,
         depth_image: np.ndarray,
         target_bboxes: List[List[int]] = [],
-        target_x: Optional[int] = None,
+        target_x: Optional[int] = -1,
     ) -> Tuple[int, bool, Optional[np.ndarray]]:
         """
         障害物を処理し、安全なX座標を計算する。
@@ -81,16 +82,12 @@ class Obstacles:
                 - 障害物の有無（True: 障害物なし, False: 障害物あり）。
                 - 視覚化画像（RGB形式の画像。障害物と安全なX座標が表示されている）。
         """
-        # 深度画像がNoneの場合、警告を出してデフォルト値を返す
         if depth_image is None:
             self.logger.warning("Depth image is None. Cannot process obstacles.")
             return 0, True, None
 
-        # 深度画像が2次元でない場合、エラーを出してデフォルト値を返す
         if depth_image.ndim != 2:
-            self.logger.error(
-                f"Depth image must be 2D. Received shape: {depth_image.shape}"
-            )
+            self.logger.error(f"Depth image must be 2D. Received shape: {depth_image.shape}")
             return 0, True, None
 
         # 深度画像を左右反転
@@ -98,124 +95,83 @@ class Obstacles:
         depth_image_flipped = depth_image_flipped[:, :-25]
         self.logger.debug(f"Depth image flipped. Shape: {depth_image_flipped.shape}")
 
-        # 深度画像の統計情報をログに出力
-        min_depth = np.min(depth_image_flipped)
-        max_depth = np.max(depth_image_flipped)
-        mean_depth = np.mean(depth_image_flipped)
-        self.logger.debug(f"Depth image stats - min: {min_depth}, max: {max_depth}, mean: {mean_depth}")
-        
         # メディアンフィルタを適用してノイズを除去
-        # フィルタサイズは5x5
         depth_filtered = cv2.medianBlur(depth_image_flipped.astype(np.uint16), 5).astype(np.float32)
         self.logger.debug("Applied median filter to depth image.")
 
         # 障害物マスクを生成
-        # 障害物とみなす深度閾値以下のピクセルをTrueとする
         obstacle_mask = depth_filtered < self.obstacle_distance_threshold
-        self.logger.debug(
-            f"Initial obstacle mask created. Total obstacles (pixels): {np.sum(obstacle_mask)}"
-        )
+        self.logger.debug(f"Initial obstacle mask created. Total obstacles (pixels): {np.sum(obstacle_mask)}")
 
         # 連結成分分析を実施して障害物をラベリング
         obstacle_mask_cleaned, labels, stats = self.filter_obstacles(obstacle_mask)
-        self.logger.debug(
-            f"Obstacle mask after filtering small obstacles. Total obstacles (pixels): {np.sum(obstacle_mask_cleaned)}"
-        )
+        self.logger.debug(f"Obstacle mask after filtering small obstacles. Total obstacles (pixels): {np.sum(obstacle_mask_cleaned)}")
 
-        # 障害物の総ピクセル数をカウント
-        total_obstacle_pixels = np.sum(obstacle_mask_cleaned)
-        self.logger.debug(f"Total obstacle pixels: {total_obstacle_pixels}")
-        
-        # 障害物の有無を示すフラグ（初期値はFalse）
-        obstacle_present = False
+        # 画面中央15%範囲の障害物確認
+        central_region_start = int(self.frame_width * 0.425)  # 画面の中央から7.5%左
+        central_region_end = int(self.frame_width * 0.575)    # 画面の中央から7.5%右
+        central_obstacle_present = np.any(obstacle_mask_cleaned[:, central_region_start:central_region_end])
 
         # 人のマスクと重なっている障害物のラベルを保持するリスト
         person_mask = None
         overlapping_labels = []
 
-        # 端が、障害物で30%以上覆われていた場合、壁
-        left_wall = np.sum(obstacle_mask[:, :self.wall_exclusion_margin]) > (np.sum(depth_filtered[:, :self.wall_exclusion_margin] * 0.3))
-        right_wall = np.sum(obstacle_mask[:, -self.wall_exclusion_margin:]) > (np.sum(depth_filtered[:, -self.wall_exclusion_margin:] * 0.3))
-        wall_detected = left_wall or right_wall
-        
-        if wall_detected:
-            # 壁が検出された場合、safe_x を画面中央に設定して直進
-            safe_x = self.frame_width // 2
-            self.logger.debug("Wall detected. Setting Safe X to screen center for straight movement.")
+        if target_bboxes and target_x != -1:
+            # ターゲット（人）の検出
+            person_mask = self.detect_person_contour(depth_filtered, target_bboxes)
+            if person_mask is not None:
+                self.logger.debug("Person detected using depth contour.")
+                overlapping_labels = self.find_overlapping_obstacles(depth_filtered, labels, person_mask)
+                if overlapping_labels:
+                    for label in overlapping_labels:
+                        obstacle_mask_cleaned[labels == label] = True
+                    self.logger.debug("Obstacles detected overlapping with person.")
+
+        # 安全なX座標の初期設定
+        if target_bboxes and target_x != -1:
+            self.last_target_x = target_x
+            safe_x = target_x
         else:
-            if target_bboxes and target_x is not None:
-                # ターゲット（人）の検出
-                person_mask = self.detect_person_contour(depth_filtered, target_bboxes)
-                if person_mask is not None:
-                    self.logger.debug("Person detected using depth contour.")
-
-                    # 人と重なっている障害物のラベルを検出
-                    overlapping_labels = self.find_overlapping_obstacles(
-                        depth_filtered, labels, person_mask
-                    )
-                    if overlapping_labels:
-                        # 重なっている障害物が存在する場合、障害物ありとする
-                        obstacle_present = True
-                        for label in overlapping_labels:
-                            obstacle_mask_cleaned[labels == label] = True
-                        self.logger.debug("Obstacles detected overlapping with person.")
-                    else:
-                        # 重なっている障害物がない場合、障害物なしとする
-                        self.logger.debug("No overlapping obstacles detected with person.")
-                else:
-                    # 人の検出ができなかった場合、障害物なしとする
-                    self.logger.debug("No person detected.")
-                    obstacle_present = False
-
-            # 安全なX座標の初期設定
-            if target_bboxes and target_x is not None:
-                # ターゲットが検出されている場合、そのX座標を安全なX座標とする
-                self.logger.debug(f"Target detected at X: {target_x}")
-                self.last_target_x = target_x
-                safe_x = target_x
+            # ターゲットが検出されていない場合、最後に検出されたターゲットのX座標を使用
+            if self.last_target_x != -1:
+                safe_x = self.last_target_x
             else:
-                # ターゲットが検出されていない場合、最後に検出されたターゲットのX座標を使用
-                if self.last_target_x is not None:
-                    self.logger.debug(
-                        f"No target detected. Using last_target_x: {self.last_target_x}"
-                    )
-                    safe_x = self.last_target_x
-                else:
-                    # 最後のターゲットも存在しない場合、画面中央をデフォルトの安全なX座標とする
-                    self.logger.debug(
-                        "No target detected and no last_target_x. Defaulting Safe X to center."
-                    )
-                    safe_x = 0
+                safe_x = 0  # デフォルトで画面中央
 
-        # 安全なX座標を画面座標に変換（画面左端を0として、右端をframe_widthにする）
+        # 安全なX座標を画面座標に変換
         safe_x_screen = safe_x + (self.frame_width // 2)
+        safe_x_centered = safe_x
         self.logger.debug(f"Safe X in screen coordinates: {safe_x_screen}")
 
-        # 安全なX座標を再計算
-        safe_x = self.find_safe_x(
-            obstacle_present, depth_filtered, safe_x_screen, obstacle_mask, target_x
-        )
-        self.logger.debug(f"Safe X recalculated: {safe_x}")
+        if not (target_bboxes and target_x != -1 and not overlapping_labels):
+            # 安全なX座標を再計算
+            safe_x = self.find_safe_x(
+                central_obstacle_present, depth_filtered, safe_x_screen, obstacle_mask_cleaned, target_x
+            )
+            self.logger.debug(f"Safe X recalculated: {safe_x}")
 
-        # 安全なX座標を画面中心基準に調整（左が負、右が正）
-        safe_x_centered = safe_x - (self.frame_width // 2)
-        self.logger.debug(f"Final Safe X (centered): {safe_x_centered}")
+            # 安全なX座標を画面中心基準に調整
+            safe_x_centered = safe_x - (self.frame_width // 2)
+            self.logger.debug(f"Final Safe X (centered): {safe_x_centered}")
+        else:
+            safe_x = safe_x_screen
 
         # 深度画像と検出結果を視覚化したRGB画像を生成
         depth_frame = self.visualize_depth(
             depth_filtered,
             safe_x,
             labels,
-            overlapping_labels if target_bboxes and target_x is not None else [],
-            person_mask if target_bboxes and target_x is not None else None,
+            overlapping_labels if target_bboxes and target_x != -1 else [],
+            person_mask if target_bboxes and target_x != -1 else None,
         )
 
-        # 障害物の有無をフラグとして設定（総ピクセル数が200以下の場合はFalse）
-        obstacle_flag = total_obstacle_pixels > 200 and obstacle_present
+        # obstacle_flagの設定：進行方向（画面中央15%）に障害物があるか、対象に重なっている障害物がある場合のみTrue
+        obstacle_flag = central_obstacle_present or bool(overlapping_labels)
         self.logger.debug(f"Obstacle flag set to: {obstacle_flag}")
 
         # 安全なX座標、障害物の有無、視覚化画像を返す
         return safe_x_centered, not obstacle_flag, depth_frame
+
 
     def detect_person_contour(
         self, depth_filtered: np.ndarray, target_bboxes: List[List[int]]
@@ -282,7 +238,7 @@ class Obstacles:
             self.logger.debug("No labels within depth threshold for person.")
             return None
 
-        # 人のマスクを作成（複数のラベルを含む場合もある）
+        # ラベリングされた領域がつながっているもののみを人のマスクとして認識
         person_mask = np.isin(labels, person_labels)
         self.logger.debug(f"Person labels determined: {person_labels}")
 
@@ -369,87 +325,86 @@ class Obstacles:
         safe_x_screen: int,
         obstacle_mask_cleaned: np.ndarray,
         target_x: Optional[int],
-        min_safe_width: int = 50  # 最小幅の基準
+        min_safe_width: int = 50
     ) -> int:
-        if not obstacle_present and target_x != -1:
-            return target_x
-        
         self.logger.debug("Starting find_safe_x process.")
 
         # 障害物のマスクを逆転し、安全な列を示すマスクを作成
         safe_columns = ~np.any(obstacle_mask_cleaned, axis=0)
         self.logger.debug(f"Total safe columns identified: {np.sum(safe_columns)}")
 
-        # 対象が見つかっていない場合（target_x == -1）は、通常の安全領域探索処理を実行
-        if target_x == -1 or obstacle_present:
-            # 安全な領域が全くない場合、画面の中心をデフォルトとして設定
-            if np.sum(safe_columns) == 0:
-                safe_x = self.frame_width // 2
-                self.logger.debug(f"No safe regions found. Defaulting Safe X to: {safe_x}")
-                return safe_x
+        # 安全な列の範囲を検出
+        safe_starts = []
+        safe_ends = []
+        in_safe_region = False
 
-            # 安全な列の範囲を検出
-            safe_starts = []
-            safe_ends = []
-            in_safe_region = False
+        for x in range(self.frame_width):
+            if safe_columns[x] and not in_safe_region:
+                safe_starts.append(x)
+                in_safe_region = True
+            elif not safe_columns[x] and in_safe_region:
+                safe_ends.append(x - 1)
+                in_safe_region = False
 
-            for x in range(self.frame_width):
-                if safe_columns[x] and not in_safe_region:
-                    safe_starts.append(x)
-                    in_safe_region = True
-                elif not safe_columns[x] and in_safe_region:
-                    safe_ends.append(x - 1)
-                    in_safe_region = False
+        if in_safe_region:
+            safe_ends.append(self.frame_width - 1)
 
-            # 最後の安全領域が画像の右端まで続いている場合の処理
-            if in_safe_region:
-                safe_ends.append(self.frame_width - 1)
+        # 20px未満の安全領域の連結
+        merged_safe_starts = []
+        merged_safe_ends = []
+        i = 0
+        while i < len(safe_starts):
+            start = safe_starts[i]
+            end = safe_ends[i]
 
-            # 前回の `safe_x` が存在する安全領域を確認
-            current_safe_region = None
-            for start, end in zip(safe_starts, safe_ends):
-                if start <= safe_x_screen <= end:
-                    current_safe_region = (start, end)
-                    break
+            while i + 1 < len(safe_starts) and safe_starts[i + 1] - end <= 20:
+                end = safe_ends[i + 1]
+                i += 1
 
-            max_allowed_shift = self.frame_width // 3  # 移動が許される最大距離
+            merged_safe_starts.append(start)
+            merged_safe_ends.append(end)
+            i += 1
 
-            if current_safe_region:
-                # 現在の領域が存在する場合、その領域の中心を `safe_x` として設定
-                safe_x = (current_safe_region[0] + current_safe_region[1]) // 2
-                self.logger.debug(f"Staying in current safe region from {current_safe_region[0]} to {current_safe_region[1]}, setting Safe X to {safe_x}.")
-            else:
-                # 現在の領域が存在しない場合のみ、新しい安全領域を探す
-                min_distance = float('inf')
-                selected_start = None
-                selected_end = None
+        # 最も広い安全領域を見つける
+        max_width = 0
+        best_safe_x = self.frame_width // 2  # デフォルトは画面中央
+        for start, end in zip(merged_safe_starts, merged_safe_ends):
+            width = end - start
+            if width > max_width:
+                max_width = width
+                best_safe_x = (start + end) // 2  # 最も広い安全領域の中心
 
-                for start, end in zip(safe_starts, safe_ends):
-                    region_center = (start + end) // 2
-                    distance = abs(region_center - safe_x_screen)
-                    
-                    # 前回の `safe_x` に最も近い領域を選択（ただし、移動距離は `max_allowed_shift` 以下に制限）
-                    if distance < min_distance and distance <= max_allowed_shift:
-                        min_distance = distance
-                        selected_start = start
-                        selected_end = end
+        # 前回の `safe_x` から30ピクセル以上の変動がある場合
+        if abs(best_safe_x - self.last_safe_x) > 30:
+            # 新しい領域が前回の安全領域の2倍未満である場合
+            if max_width < 2 * self.min_safe_width:
+                # 前回の `safe_x` の位置に存在する安全領域の中央を計算
+                previous_region_start, previous_region_end = None, None
+                for start, end in zip(merged_safe_starts, merged_safe_ends):
+                    if start <= self.last_safe_x <= end:
+                        previous_region_start = start
+                        previous_region_end = end
+                        break
 
-                if selected_start is not None and selected_end is not None:
-                    # 移動が許される範囲内での新しい安全領域が見つかった場合、その中心を `safe_x` に設定
-                    safe_x = (selected_start + selected_end) // 2
-                    self.logger.debug(f"Switching to new safe region from {selected_start} to {selected_end}, setting Safe X to {safe_x}.")
+                if previous_region_start is not None and previous_region_end is not None:
+                    # 前回の `safe_x` の位置にある安全領域の中央を新しい `safe_x` に設定
+                    self.last_safe_x = (previous_region_start + previous_region_end) // 2
+                    self.logger.debug(f"Keeping safe X within previous safe region at X={self.last_safe_x}")
                 else:
-                    # 画面の 1/3 よりも大きい移動が必要な場合は、現在の位置に留まる
-                    safe_x = safe_x_screen
-                    self.logger.debug("No suitable safe region within allowed shift. Keeping Safe X at current position.")
-
+                    # 安全領域が見つからない場合はデフォルトとして最も広い領域を設定
+                    self.last_safe_x = best_safe_x
+                    self.logger.debug(f"No previous safe region found, setting safe X to widest region at X={best_safe_x}")
+            else:
+                # 幅が十分大きい場合、新しい領域の中心を `safe_x` として設定
+                self.last_safe_x = best_safe_x
+                self.logger.debug(f"Switching to a wider safe region at X={best_safe_x} (width: {max_width})")
         else:
-            # 対象が見つかり、障害物がない場合は、対象の X 座標を `safe_x` に設定
-            safe_x = target_x
-            self.logger.debug(f"Target detected at X={target_x} with no obstruction. Setting Safe X to target X.")
+            # 30px以内の変動ならそのまま設定
+            self.logger.debug(f"Safe X within 30px change, setting to X={best_safe_x}")
+            self.last_safe_x = best_safe_x
 
-        return safe_x
-
+        return self.last_safe_x
+    
     def visualize_depth(
         self,
         depth_filtered: np.ndarray,
@@ -494,13 +449,45 @@ class Obstacles:
             visualization_image[person_mask] = [0, 0, 255]
             self.logger.debug("Person colored blue.")
 
-        # 安全な列の判定（壁がある場合に紫色の安全領域を半透明に設定）
+        # 安全な列の判定と20px未満の領域の連結処理
         safe_columns = ~np.any(obstacle_mask | person_mask if person_mask is not None else obstacle_mask, axis=0)
         self.logger.debug(f"Safe columns identified: {np.sum(safe_columns)}")
 
+        safe_starts = []
+        safe_ends = []
+        in_safe_region = False
+
+        for x in range(self.frame_width):
+            if safe_columns[x] and not in_safe_region:
+                safe_starts.append(x)
+                in_safe_region = True
+            elif not safe_columns[x] and in_safe_region:
+                safe_ends.append(x - 1)
+                in_safe_region = False
+
+        if in_safe_region:
+            safe_ends.append(self.frame_width - 1)
+
+        # 20px未満の安全領域の連結
+        merged_safe_starts = []
+        merged_safe_ends = []
+        i = 0
+        while i < len(safe_starts):
+            start = safe_starts[i]
+            end = safe_ends[i]
+
+            while i + 1 < len(safe_starts) and safe_starts[i + 1] - end <= 20:
+                end = safe_ends[i + 1]
+                i += 1
+
+            merged_safe_starts.append(start)
+            merged_safe_ends.append(end)
+            i += 1
+
         # 紫色（半透明）の安全領域を設定
         overlay = visualization_image.copy()
-        overlay[:, safe_columns] = [128, 0, 128]  # 紫色
+        for start, end in zip(merged_safe_starts, merged_safe_ends):
+            overlay[:, start:end] = [128, 0, 128]  # 紫色
         alpha = 0.5  # 半透明のための透明度
         cv2.addWeighted(overlay, alpha, visualization_image, 1 - alpha, 0, visualization_image)
         self.logger.debug("Safe vertical regions colored purple with transparency.")

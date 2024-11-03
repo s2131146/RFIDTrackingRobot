@@ -34,6 +34,15 @@ class TrackerSocket:
             config = rs.config()
             config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
             config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+            context = rs.context()
+            devices = context.query_devices()
+
+            if len(devices) > 0:
+                logger.info(f"Active RealSenses ({len(devices)}):")
+                for device in devices:
+                    logger.info(
+                        f"- {device.get_info(rs.camera_info.name)} [#{device.get_info(rs.camera_info.serial_number)}]"
+                    )
 
             try:
                 self.pipeline.start(config)
@@ -151,8 +160,8 @@ class TrackerSocket:
 
                 try:
                     self.process_data(data)
-                except RuntimeError:
-                    pass
+                except Exception as e:
+                    logger.error(e)
             except Exception:
                 logger.error(
                     "[Socket] An error occured at loop_serial: {}".format(

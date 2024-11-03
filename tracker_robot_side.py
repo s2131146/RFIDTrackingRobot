@@ -88,7 +88,6 @@ class TrackerSocketRobot:
         Returns:
             bool: Connection result
         """
-        self.send_to_host("Connecting to Arduino...")
         self.com = serial.Serial()
         self.com.port = self.ser_port
         self.com.baudrate = self.baud
@@ -98,10 +97,9 @@ class TrackerSocketRobot:
         try:
             self.com.open()
             self.com_connected = True
-            self.send_to_host("Serial port connected")
-        except serial.SerialException as e:
-            pr(str(e))
-            self.send_to_host("Serial port is not open")
+            self.send_to_host("Connected to Arduino")
+        except serial.SerialException:
+            pass
         return self.com_connected
 
     def get_command(self, data) -> string:
@@ -143,7 +141,6 @@ class TrackerSocketRobot:
             return True
         except serial.SerialException:
             self.com_connected = False
-            self.send_to_host("Failed to connect to Arduino.")
             return False
 
     def print_serial(self):
@@ -155,7 +152,6 @@ class TrackerSocketRobot:
             else:
                 return False, ""
         except serial.SerialException:
-            self.send_to_host("Failed to connect to Arduino.")
             return False, ""
 
     def close(self):
@@ -351,4 +347,5 @@ if __name__ == "__main__":
     if not cam_connected:
         pr("RealSense is not connected.")
     pr("Startup completed. Elapsed: {}ms".format(math.floor((time.time() - s) * 1000)))
-    main()
+    while True:
+        main()
