@@ -100,7 +100,9 @@ class Obstacles:
         self.logger.debug("Applied median filter to depth image.")
 
         # 障害物マスクを生成
+        mask_height = int(self.frame_height * 0.1)
         obstacle_mask = depth_filtered < self.obstacle_distance_threshold
+        obstacle_mask[-mask_height:, :] = False 
         self.logger.debug(f"Initial obstacle mask created. Total obstacles (pixels): {np.sum(obstacle_mask)}")
 
         # 連結成分分析を実施して障害物をラベリング

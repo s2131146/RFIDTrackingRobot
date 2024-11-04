@@ -81,13 +81,9 @@ class GUI:
         screen_height = self.root.winfo_screenheight()
 
         # 解像度を0.75倍に設定
-        scale_factor = 0.75
+        scale_factor = 1
         width = int(screen_width * scale_factor)
         height = int(screen_height * scale_factor)
-
-        # フレームカウンタとタイマーを初期化
-        frame_count = 0
-        start_time = time.time()
 
         # FourCCコードを'MJPG'に設定し、ファイル拡張子を'.avi'に
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
@@ -114,22 +110,14 @@ class GUI:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
             out.write(frame)
-            frame_count += 1
 
             # 処理時間を考慮して待機
             elapsed_time = time.time() - frame_start_time
             sleep_time = max(0, target_frame_interval - elapsed_time)
             time.sleep(sleep_time)
 
-        # 録画が終了したら、総録画時間を計算
-        total_time = time.time() - start_time
-        print(f"録画時間: {total_time:.2f} 秒")
-        print(f"フレーム数: {frame_count}")
-        print(f"実際の平均FPS: {frame_count / total_time:.2f} fps")
-
         out.release()
         cv2.destroyAllWindows()
-        print("録画が完了しました")
 
     def adjust_video(self, filename, fps):
         # OpenCVで動画ファイルを読み込み、fpsを修正して新しいファイルとして保存

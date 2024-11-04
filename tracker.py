@@ -571,9 +571,24 @@ class Tracker:
         target_bboxes = []
 
         if not self.RFID_ONLY_MODE:
-            if len(detected_targets) > 1:
-                # 二人以上検出された場合の処理
-                logger.info(f"Multiple targets detected: {len(detected_targets)}")
+            if len(detected_targets) > 1:                
+                # Trackerを使用して追跡対象を選択
+                selected_target = self.target_processor.select_target(detected_targets)
+
+                if selected_target:
+                    # 選択されたターゲットを処理
+                    result = self.target_processor.process_target(
+                        [selected_target], self.frame
+                    )
+                    if result is not None:
+                        (target_center_x, self.target_x, target_bboxes) = result
+                        self.target_position_str = self.get_target_pos_str(
+                            target_center_x
+                        )
+                        self.target_processor.draw_all_targets(
+                            detected_targets, selected_target, self.frame
+                        )
+                        
                 if self.RFID_ENABLED:
                     self.execute_rfid_direction()
             elif len(detected_targets) == 1:
@@ -719,6 +734,7 @@ class Tracker:
     def close(self):
         logger.info("Closing application")
         self.stop_motor()
+        self.obstacles.close()
         self.serial.close()
 
         if DEBUG_USE_ONLY_WEBCAM:
