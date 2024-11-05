@@ -1,3 +1,4 @@
+#include "Arduino.h"
 #include <Servo.h>
 
 #include <MotorWheel.h>
@@ -336,7 +337,9 @@ void setup() {
     Serial.println("Setup completed");
 }
 
-void loop() {
+unsigned long sonarMillis = millis();
+
+void loop() {    
     if (Serial.available()) {
         String data = getSerialStr();
         RFIDTR::executeCommand(data);

@@ -17,7 +17,7 @@ class Obstacles:
         frame_height: int,
         logger: logging.Logger,
         wall_exclusion_margin: int = 50,
-        obstacle_distance_threshold: float = 500.0,  # ミリメートル（調整済み）
+        obstacle_distance_threshold: float = 2000.0,  # ミリメートル（調整済み）
         min_safe_width: int = 50,
         min_obstacle_size: Tuple[int, int] = (70, 40),  # (縦, 横) ピクセル
         max_obstacle_size: Tuple[int, int] = (640, 480),  # (縦, 横) ピクセル
@@ -100,13 +100,13 @@ class Obstacles:
         self.logger.debug("Applied median filter to depth image.")
 
         # 障害物マスクを生成
-        mask_height = int(self.frame_height * 0.1)
+        upper_mask_height = int(self.frame_height * 0.7)
         obstacle_mask = depth_filtered < self.obstacle_distance_threshold
-        obstacle_mask[-mask_height:, :] = False 
+        obstacle_mask[upper_mask_height:, :] = False  # 下部40%をFalseに設定
         self.logger.debug(f"Initial obstacle mask created. Total obstacles (pixels): {np.sum(obstacle_mask)}")
 
         # 連結成分分析を実施して障害物をラベリング
-        obstacle_mask_cleaned, labels, stats = self.filter_obstacles(obstacle_mask)
+        obstacle_mask_cleaned, labels, _ = self.filter_obstacles(obstacle_mask)
         self.logger.debug(f"Obstacle mask after filtering small obstacles. Total obstacles (pixels): {np.sum(obstacle_mask_cleaned)}")
 
         # 画面中央15%範囲の障害物確認
@@ -147,9 +147,7 @@ class Obstacles:
 
         if not (target_bboxes and target_x != -1 and not overlapping_labels):
             # 安全なX座標を再計算
-            safe_x = self.find_safe_x(
-                central_obstacle_present, depth_filtered, safe_x_screen, obstacle_mask_cleaned, target_x
-            )
+            safe_x = self.find_safe_x(obstacle_mask_cleaned)
             self.logger.debug(f"Safe X recalculated: {safe_x}")
 
             # 安全なX座標を画面中心基準に調整
@@ -320,15 +318,7 @@ class Obstacles:
         return obstacle_mask_filtered, labels, stats
 
 
-    def find_safe_x(
-        self,
-        obstacle_present,
-        depth_filtered: np.ndarray,
-        safe_x_screen: int,
-        obstacle_mask_cleaned: np.ndarray,
-        target_x: Optional[int],
-        min_safe_width: int = 50
-    ) -> int:
+    def find_safe_x(self, obstacle_mask_cleaned: np.ndarray) -> int:
         self.logger.debug("Starting find_safe_x process.")
 
         # 障害物のマスクを逆転し、安全な列を示すマスクを作成
