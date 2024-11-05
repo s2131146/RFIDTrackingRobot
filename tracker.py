@@ -116,7 +116,7 @@ class Tracker:
 
         self.target_position_str = "X"
         self.target_x = -1
-        self.safe_x = 0
+        self.obs_pos = Obstacles.OBS_POS_NONE
 
         self.received_serial = None
         self.disconnect = False
@@ -316,50 +316,10 @@ class Tracker:
             self.motor_power_r = 0
             self.stop_temp = True
 
-    def avoid_obstacle(self):
-        """障害物を回避するためのモーター出力を滑らかに設定"""
-        # 障害物の安全なX座標に基づいてターンの強さを決定
-        # obstacle_free_center_x は障害物回避後の目標X座標
-        target_x = self.safe_x  # obstacles.py で計算された安全なX座標
-
-        # 中央からのずれを正規化 (-1.0 ~ 1.0)
-        normalized_error = target_x / (self.frame_width / 2)
-
-        # 方向調整の強さを設定（0〜100）
-        steer_strength = 50  # 調整可能
-
-        # ベースモーター出力を設定
-        base_speed = 100  # 必要に応じて調整
-
-        if normalized_error < -0.1:
-            # 左に大きく曲がる必要がある場合
-            self.motor_power_l = max(
-                0, base_speed - abs(normalized_error) * steer_strength
-            )
-            self.motor_power_r = min(
-                100, base_speed + abs(normalized_error) * steer_strength
-            )
-        elif normalized_error > 0.1:
-            # 右に大きく曲がる必要がある場合
-            self.motor_power_r = max(
-                0, base_speed - abs(normalized_error) * steer_strength
-            )
-            self.motor_power_l = min(
-                100, base_speed + abs(normalized_error) * steer_strength
-            )
-        else:
-            # 中央付近の場合は直進
-            self.motor_power_l = base_speed
-            self.motor_power_r = base_speed
-
-        # 追加でモーター出力をスムーズに調整するための制限（オプション）
-        self.motor_power_l = int(np.clip(self.motor_power_l, 0, 100))
-        self.motor_power_r = int(np.clip(self.motor_power_r, 0, 100))
-
     def is_obstacle_cleared(self):
         """障害物がクリアされたかを判断"""
         # フレーム内に障害物が検出されていない場合
-        return self.no_obs
+        return not self.obs_detected
 
     def turn_towards_target(self):
         """障害物回避後に対象に向かってターンする"""
@@ -376,13 +336,23 @@ class Tracker:
             self.motor_power_l = self.default_speed
             self.motor_power_r = self.default_speed
 
-    def calculate_motor_power(self, target_x, obs=False):
+    def calculate_motor_power(self, target_x=0):
         """モーター出力を計算
 
         Args:
             target_x (int): 対象座標X
             obs (bool): 障害物検知のフラグ
         """
+        if self.obs_detected:
+            if self.obs_pos == Obstacles.OBS_POS_LEFT:
+                target_x = 160
+            elif self.obs_pos == Obstacles.OBS_POS_RIGHT:
+                target_x = -160
+            elif self.obs_pos == Obstacles.OBS_POS_CENTER:
+                self.send(Commands.ROTATE_LEFT)
+                self.stop_exec_cmd = True
+                return
+            
         # 定義された占有率と対応する基礎速度のポイント
         # 占有率: 0% -> 100%, 15% -> 100%, 40% -> 80%, 60% -> 60%, 100% -> 0%
         occupancy_thresholds = [0.0, 0.15, 0.40, 0.60, 1.0]
@@ -440,10 +410,6 @@ class Tracker:
 
         self.motor_power_l = int(self.motor_power_l)
         self.motor_power_r = int(self.motor_power_r)
-
-        # 障害物が検出された場合、状態を変更
-        if not self.no_obs and not obs:
-            self.calculate_motor_power(self.safe_x, True)
 
     def get_target_pos_str(self, target_center_x):
         return self.target_processor.get_target_pos_str(target_center_x)
@@ -532,8 +498,7 @@ class Tracker:
         self.target_position_str = "X"
         self.stop_exec_cmd = False
         self.target_x = -1
-        self.no_obs = True
-        self.safe_x = 0
+        self.obs_detected = False
 
     def capture_frame(self):
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
@@ -568,7 +533,7 @@ class Tracker:
         )
 
         self.rfid_accessing = False
-        target_bboxes = []
+        self.stop_exec_cmd = False
 
         if not self.RFID_ONLY_MODE:
             if len(detected_targets) > 1:                
@@ -629,9 +594,9 @@ class Tracker:
                     self.execute_rfid_direction()
 
         if not DEBUG_USE_ONLY_WEBCAM and DEBUG_DETECT_OBSTACLES:
-            self.safe_x, self.no_obs, self.depth_frame = (
+            self.obs_pos, self.obs_detected, self.depth_frame = (
                 self.obstacles.process_obstacles(
-                    self.serial.depth_image, target_bboxes, self.target_x
+                    self.serial.depth_image, self.target_x
                 )
             )
             
@@ -716,7 +681,7 @@ class Tracker:
             f"target_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr}\n"
             f"connected: {self.serial.ser_connected} port: {SERIAL_PORT} baud: {SERIAL_BAUD} data: {self.serial.serial_sent}\n"
             f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
-            f"obstacle_detected: {not self.no_obs} safe_x: {self.safe_x} "
+            f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos}\n"
             f"no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
             f"detecting: {round(self.time_detected, 2):.2f}\n"
             f"self.RFID_ENABLED: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} def_speed: {self.default_speed}\n"
