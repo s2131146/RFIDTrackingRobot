@@ -337,8 +337,6 @@ void setup() {
     Serial.println("Setup completed");
 }
 
-unsigned long sonarMillis = millis();
-
 void loop() {    
     if (Serial.available()) {
         String data = getSerialStr();

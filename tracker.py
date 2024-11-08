@@ -1,4 +1,5 @@
 import os
+from typing import Tuple
 
 # カメラ起動高速化
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -19,7 +20,6 @@ import gui
 import logger as l
 
 from obstacles import Obstacles
-from target_processor import TargetProcessor
 
 from ultralytics import YOLO
 
@@ -37,6 +37,7 @@ FRAME_HEIGHT = 480
 
 CAM_NO = 0
 
+DEBUG_SLOW_MOTOR = True
 DEBUG_SERIAL = True
 DEBUG_USE_ONLY_WEBCAM = False
 DEBUG_DETECT_OBSTACLES = True
@@ -94,6 +95,7 @@ class Tracker:
 
         # 自動停止状態を管理するフラグ
         self.auto_stop = False
+        self.auto_stop_obs = False
 
         self.RFID_ENABLED = False
         self.RFID_ONLY_MODE = True
@@ -103,6 +105,8 @@ class Tracker:
 
         # 障害物検出クラスのインスタンス作成
         self.obstacles = Obstacles(FRAME_WIDTH, FRAME_HEIGHT, logger)
+
+        from target_processor import TargetProcessor
 
         # 対象検出クラスのインスタンス作成
         self.target_processor = TargetProcessor(
@@ -117,6 +121,14 @@ class Tracker:
         self.target_position_str = "X"
         self.target_x = -1
         self.obs_pos = Obstacles.OBS_POS_NONE
+        self.wall = None
+        self.avoid_wall = False
+
+        self.last_target_direction = (
+            None  # ターゲットが最後にいた方向 ('LEFT' または 'RIGHT')
+        )
+        self.following_wall = False  # 壁沿い移動中かどうか
+        self.wall_follow_direction = None  # 壁沿い移動の方向 ('LEFT' または 'RIGHT')
 
         self.received_serial = None
         self.disconnect = False
@@ -180,14 +192,14 @@ class Tracker:
             (text_width, text_height), baseline = cv2.getTextSize(
                 line, cv2.FONT_HERSHEY_COMPLEX, 0.5, 1
             )
-            
+
             # 背景の四角形の座標を計算
             top_left = (5, 15 * index - text_height - baseline // 2)
             bottom_right = (5 + text_width, 15 * index + baseline)
 
             # 半透明の白い背景をオーバーレイに描画
             cv2.rectangle(overlay, top_left, bottom_right, (255, 255, 255), -1)
-            
+
             # 文字をオーバーレイに描画
             cv2.putText(
                 overlay,
@@ -201,7 +213,6 @@ class Tracker:
 
         # 元のフレームとオーバーレイを合成して半透明の背景を作成
         cv2.addWeighted(overlay, alpha, self.frame, 1 - alpha, 0, self.frame)
-
 
     def print_key_binds(self):
         """キーバインドを出力
@@ -336,78 +347,132 @@ class Tracker:
             self.motor_power_l = self.default_speed
             self.motor_power_r = self.default_speed
 
+    def apply_motor_wall(self, wall_direction: str) -> Tuple[int, int]:
+        """
+        壁の位置に基づき、壁沿いに進むためのモーター出力を計算します。
+
+        Args:
+            wall_direction (str): 壁の方向（LEFT, RIGHT, CENTER, NONE）
+
+        Returns:
+            Tuple[int, int]: 左右のモーターの出力（百分率）
+        """
+        if wall_direction == Obstacles.OBS_POS_LEFT:
+            # 壁が左側にある場合、右に寄って進む
+            self.motor_power_l = 50
+            self.motor_power_r = 100
+        elif wall_direction == Obstacles.OBS_POS_RIGHT:
+            # 壁が右側にある場合、左に寄って進む
+            self.motor_power_l = 100
+            self.motor_power_r = 50
+
     def calculate_motor_power(self, target_x=0):
         """モーター出力を計算
 
         Args:
             target_x (int): 対象座標X
-            obs (bool): 障害物検知のフラグ
         """
+        # 障害物が検出されている場合の処理
         if self.obs_detected:
-            if self.obs_pos == Obstacles.OBS_POS_LEFT:
-                target_x = 160
-            elif self.obs_pos == Obstacles.OBS_POS_RIGHT:
-                target_x = -160
-            elif self.obs_pos == Obstacles.OBS_POS_CENTER:
-                self.send(Commands.ROTATE_LEFT)
-                self.stop_exec_cmd = True
-                return
-            
-        # 定義された占有率と対応する基礎速度のポイント
-        # 占有率: 0% -> 100%, 15% -> 100%, 40% -> 80%, 60% -> 60%, 100% -> 0%
+            self._adjust_for_obstacles(target_x)
+            return
+
+        # 基礎速度の計算
+        base_speed = self._calculate_base_speed()
+
+        # 対象の位置に基づくモーター出力の調整
+        self._adjust_motor_power_based_on_target_position(target_x, base_speed)
+
+    def _adjust_for_obstacles(self, target_x):
+        """障害物が検出された場合にモーター出力を調整する
+
+        Args:
+            target_x (int): 対象座標X
+        """
+        if self.obs_pos == Obstacles.OBS_POS_LEFT:
+            # 左側に障害物がある場合、対象を右に移動
+            target_x = 160 if target_x > 0 else -160
+        elif self.obs_pos == Obstacles.OBS_POS_RIGHT:
+            # 右側に障害物がある場合、対象を左に移動
+            target_x = -160 if target_x < 0 else 160
+        elif self.obs_pos == Obstacles.OBS_POS_CENTER:
+            # 中央に障害物がある場合、左回転して停止
+            self.send(Commands.ROTATE_LEFT)
+            self.stop_exec_cmd = True
+
+    def _calculate_base_speed(self):
+        """占有率に基づいて基礎速度を計算する
+
+        Returns:
+            int: 基礎速度
+        """
+        # 占有率と基礎速度の対応ポイント
         occupancy_thresholds = [0.0, 0.15, 0.40, 0.60, 1.0]
         base_speeds = [100, 100, 80, 60, 0]
-
         occupancy = self.occupancy_ratio
 
-        # 線形補間を使用して基礎速度を計算
+        # 線形補間による基礎速度の計算
         base_speed = np.interp(occupancy, occupancy_thresholds, base_speeds)
+        # 速度をクランプして 0 〜 100 に制限
+        return max(0, min(100, base_speed))
 
-        # 速度をクランプ（0%〜100%）
-        base_speed = max(0, min(100, base_speed))
+    def _adjust_motor_power_based_on_target_position(self, target_x, base_speed):
+        """対象の位置に基づいてモーター出力を調整する
 
-        # 中央15%の閾値
+        Args:
+            target_x (int): 対象座標X
+            base_speed (int): 基礎速度
+        """
+        # 中央15%以内の閾値
         central_threshold = 0.15 * self.frame_width
 
         if abs(target_x) <= central_threshold:
-            # 中央15%以内に対象がいる場合、モーター出力を基礎速度に設定
+            # 中央15%以内に対象がある場合、左右のモーターに同じ基礎速度を設定
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
         else:
-            # 中央15%を超える場合、対象の位置に基づいてモーター出力を調整
-            # フレームの半幅
-            half_width = self.frame_width / 2
+            # 中央15%を超える場合、対象の位置に基づき調整
+            self._calculate_steering_power(target_x, base_speed)
 
-            # ターゲットの位置を正規化（-1.0 ~ 1.0）
-            normalized_error = target_x / (0.85 * half_width)  # 0.85は調整可能
+    def _calculate_steering_power(self, target_x, base_speed):
+        """左右のモーター出力を調整して旋回を行う
 
-            # -1.0 ~ 1.0 にクランプ
-            normalized_error = max(-1.0, min(1.0, normalized_error))
+        Args:
+            target_x (int): 対象座標X
+            base_speed (int): 基礎速度
+        """
+        # フレームの半幅で対象の位置を正規化
+        half_width = self.frame_width / 2
+        normalized_error = target_x / (0.85 * half_width)  # 0.85は調整可能
 
-            # 方向調整の強さを設定（0〜100）
-            steer_strength = 50  # 調整可能
+        # 正規化されたエラーを -1.0 ~ 1.0 にクランプ
+        normalized_error = max(-1.0, min(1.0, normalized_error))
 
-            if normalized_error < 0:
-                # 左に曲がる場合
-                self.motor_power_l = max(
-                    0, min(100, base_speed - abs(normalized_error) * steer_strength)
-                )
-                self.motor_power_r = max(
-                    0, min(100, base_speed + abs(normalized_error) * steer_strength)
-                )
-            elif normalized_error > 0:
-                # 右に曲がる場合
-                self.motor_power_r = max(
-                    0, min(100, base_speed - abs(normalized_error) * steer_strength)
-                )
-                self.motor_power_l = max(
-                    0, min(100, base_speed + abs(normalized_error) * steer_strength)
-                )
-            else:
-                # 中央の場合
-                self.motor_power_l = base_speed
-                self.motor_power_r = base_speed
+        # 方向調整の強さ
+        steer_strength = 50
 
+        if normalized_error < 0:
+            # 左に曲がる場合
+            self.motor_power_l = max(
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+            )
+            self.motor_power_r = max(
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+            )
+        elif normalized_error > 0:
+            # 右に曲がる場合
+            self.motor_power_r = max(
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+            )
+            self.motor_power_l = max(
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+            )
+        else:
+            # 中央の場合
+            self.motor_power_l = base_speed
+            self.motor_power_r = base_speed
+
+        # モーター出力を整数値に丸める
         self.motor_power_l = int(self.motor_power_l)
         self.motor_power_r = int(self.motor_power_r)
 
@@ -477,7 +542,10 @@ class Tracker:
 
     def update_motor_power(self):
         self.gui.root.after(
-            0, self.gui.update_motor_values, self.motor_power_l, self.motor_power_r
+            0,
+            self.gui.update_motor_values,
+            int(self.motor_power_l),
+            int(self.motor_power_r),
         )
 
     def update_rfid_power(self):
@@ -526,88 +594,165 @@ class Tracker:
             self.send(direction)
 
     def process_obstacles_and_targets(self):
+        """障害物およびターゲットの処理を行う"""
         current_time = time.time()
 
+        # ターゲット検出の処理
+        detected_targets = self._detect_and_select_targets(current_time)
+
+        # RFID処理
+        self._process_rfid_logic(detected_targets)
+
+        # 障害物処理
+        self._process_obstacles(detected_targets)
+
+        # モーター制御
+        self._control_motor_for_target()
+
+        # RFIDモードでのターゲット方向送信
+        self._send_target_position_if_rfid_mode()
+
+        # 速度変更がある場合の処理
+        self._send_default_speed_if_changed()
+
+    def _detect_and_select_targets(self, current_time):
+        """ターゲットを検出して選択する処理"""
         detected_targets = self.target_processor.detect_targets(
             self.frame, self.RFID_ONLY_MODE, self.RFID_ENABLED
         )
-
         self.rfid_accessing = False
         self.stop_exec_cmd = False
 
+        selected_target = None
+
         if not self.RFID_ONLY_MODE:
-            if len(detected_targets) > 1:                
-                # Trackerを使用して追跡対象を選択
-                selected_target = self.target_processor.select_target(detected_targets)
-
-                if selected_target:
-                    # 選択されたターゲットを処理
-                    result = self.target_processor.process_target(
-                        [selected_target], self.frame
-                    )
-                    if result is not None:
-                        (target_center_x, self.target_x, target_bboxes) = result
-                        self.target_position_str = self.get_target_pos_str(
-                            target_center_x
-                        )
-                        self.target_processor.draw_all_targets(
-                            detected_targets, selected_target, self.frame
-                        )
-                        
-                if self.RFID_ENABLED:
-                    self.execute_rfid_direction()
-            elif len(detected_targets) == 1:
-                # 一人のみ検出された場合の既存の処理
-                if self.target_detection_start_time is None:
-                    self.target_detection_start_time = current_time
-                else:
-                    self.time_detected = current_time - self.target_detection_start_time
-
-                    if self.time_detected >= 0.3:
-                        self.target_last_seen_time = current_time
-                        self.stop_temp = False
-                        result = self.target_processor.process_target(
-                            detected_targets, self.frame
-                        )
-                        if result is not None:
-                            (target_center_x, self.target_x, target_bboxes) = result
-                            self.target_position_str = self.get_target_pos_str(
-                                target_center_x
-                            )
-            elif len(detected_targets) == 0:
-                if self.target_detection_start_time is not None:
-                    self.target_detection_start_time = None
-
-                time_since_last_seen = current_time - self.target_last_seen_time
-                if time_since_last_seen > 1.0 and not self.stop_temp:
-                    if self.RFID_ENABLED:
-                        self.execute_rfid_direction()
-                    else:
-                        if not self.stop:
-                            self.send(self.lost_target_command)
-                            self.stop_exec_cmd = True
-                            self.motor_power_l = 0
-                            self.motor_power_r = 0
-
-            else:
-                if self.RFID_ENABLED:
-                    self.execute_rfid_direction()
-
-        if not DEBUG_USE_ONLY_WEBCAM and DEBUG_DETECT_OBSTACLES:
-            self.obs_pos, self.obs_detected, self.depth_frame = (
-                self.obstacles.process_obstacles(
-                    self.serial.depth_image, self.target_x
+            if len(detected_targets) > 1:
+                # 複数ターゲットの選択処理
+                selected_target = self._select_and_process_multiple_targets(
+                    detected_targets
                 )
+            elif len(detected_targets) == 1:
+                # 単一ターゲットの処理
+                selected_target = self._process_single_target(
+                    detected_targets, current_time
+                )
+            elif len(detected_targets) == 0:
+                # ターゲットなしの場合の処理
+                self._handle_no_targets(current_time)
+
+        return [selected_target] if selected_target else []
+
+    def _select_and_process_multiple_targets(self, detected_targets):
+        """複数のターゲットを検出した場合の処理"""
+        selected_target = self.target_processor.select_target(detected_targets)
+        if selected_target:
+            result = self.target_processor.process_target([selected_target], self.frame)
+            if result is not None:
+                target_center_x, self.target_x, _ = result
+                self.target_position_str = self.get_target_pos_str(target_center_x)
+                self.target_processor.draw_all_targets(
+                    detected_targets, selected_target, self.frame
+                )
+
+        if self.RFID_ENABLED:
+            self.execute_rfid_direction()
+
+        return selected_target
+
+    def _process_single_target(self, detected_targets, current_time):
+        """単一のターゲットを検出した場合の処理"""
+        target = detected_targets[0]
+        if self.target_detection_start_time is None:
+            self.target_detection_start_time = current_time
+        else:
+            self.time_detected = current_time - self.target_detection_start_time
+            if self.time_detected >= 0.3:
+                self.target_last_seen_time = current_time
+                self.stop_temp = False
+                result = self.target_processor.process_target([target], self.frame)
+                if result is not None:
+                    target_center_x, self.target_x, _ = result
+                    self.target_position_str = self.get_target_pos_str(target_center_x)
+
+        return target
+
+    def _handle_no_targets(self, current_time):
+        """ターゲットが検出されなかった場合の処理"""
+        if self.target_detection_start_time is not None:
+            self.target_detection_start_time = None
+
+        time_since_last_seen = current_time - self.target_last_seen_time
+        if time_since_last_seen > 1.0 and not self.stop_temp:
+            if self.RFID_ENABLED:
+                self.execute_rfid_direction()
+            else:
+                if not self.stop:
+                    self.send(self.lost_target_command)
+                    self.stop_exec_cmd = True
+                    self.motor_power_l = 0
+                    self.motor_power_r = 0
+
+    def _process_rfid_logic(self, detected_targets):
+        """RFIDロジックの処理"""
+        if len(detected_targets) == 0 and self.RFID_ENABLED:
+            self.execute_rfid_direction()
+
+    def _process_obstacles(self, detected_targets):
+        """障害物処理を行う"""
+        if not DEBUG_USE_ONLY_WEBCAM and DEBUG_DETECT_OBSTACLES:
+            result = self.obstacles.process_obstacles(
+                self.serial.depth_image, self.target_x, detected_targets
             )
-            
+            if len(result) == 2:
+                if not self.auto_stop_obs:
+                    self.stop_motor()
+                    self.auto_stop_obs = True
+                _, self.depth_frame = result
+                return
+            else:
+                self.auto_stop_obs = False
+                (
+                    self.obs_pos,
+                    self.obs_detected,
+                    self.depth_frame,
+                    wall,
+                    self.avoid_wall,
+                ) = result
+
+        # 壁位置の設定
+        self._update_wall_position(wall)
+
+    def _update_wall_position(self, wall):
+        """壁の位置に基づいて状態を更新"""
+        if wall == Obstacles.OBS_POS_CENTER:
+            self.wall = "BOTH"
+        elif wall == Obstacles.OBS_POS_LEFT:
+            self.wall = "LEFT"
+        elif wall == Obstacles.OBS_POS_RIGHT:
+            self.wall = "RIGHT"
+        else:
+            self.wall = "NONE"
+
+    def _control_motor_for_target(self):
+        """ターゲット位置に基づいてモーターを制御"""
         if self.target_x != -1:
             self.calculate_motor_power(self.target_x)
 
+        # 壁を回避する場合
+        if self.wall != Obstacles.OBS_POS_NONE and self.avoid_wall:
+            self.apply_motor_wall(self.wall)
+
+    def _send_target_position_if_rfid_mode(self):
+        """RFIDモード時にターゲット方向を送信"""
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
             self.target_position_str = self.rfid_reader.get_direction()
             if not self.stop:
                 self.send(self.target_position_str)
 
+    def _send_default_speed_if_changed(self):
+        """デフォルト速度に変更がある場合に送信"""
+        if DEBUG_SLOW_MOTOR:
+            self.default_speed = 100
         if self._def_spd_bk != self.default_speed:
             self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
             self._def_spd_bk = self.default_speed
@@ -681,11 +826,11 @@ class Tracker:
             f"target_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr}\n"
             f"connected: {self.serial.ser_connected} port: {SERIAL_PORT} baud: {SERIAL_BAUD} data: {self.serial.serial_sent}\n"
             f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
-            f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos}\n"
-            f"no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
+            f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
+            f"avoid: {self.avoid_wall} no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
             f"detecting: {round(self.time_detected, 2):.2f}\n"
             f"self.RFID_ENABLED: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} def_speed: {self.default_speed}\n"
-            f"Auto_Stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%}"
+            f"auto_stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%}"
         )
         self.print_d(debug_text)
         self.print_key_binds()
