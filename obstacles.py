@@ -1,5 +1,6 @@
 import time
 from typing import ClassVar, Counter, Optional, Tuple
+import concurrent
 import cv2
 import numpy as np
 import logging
@@ -193,7 +194,7 @@ class Obstacles:
             obstacle_mask.shape[0] * obstacle_mask.shape[1]
         )
 
-        if total_coverage >= 0.6:
+        if total_coverage >= 0.5:
             return True
 
         return False
@@ -203,6 +204,7 @@ class Obstacles:
     ) -> str:
         """
         壁の位置を `wall_mask` と `depth_image` に基づいて判定します。
+        中央領域に壁がある場合、左右の位置に基づいて左右の壁位置を決定。
 
         Args:
             depth_image (np.ndarray): 深度画像
@@ -214,12 +216,25 @@ class Obstacles:
         _, width = wall_mask.shape
         left_area = wall_mask[:, : width // 5]
         right_area = wall_mask[:, -width // 5 :]
+        central_area = wall_mask[:, self.central_start : self.central_end]  # 中央領域
 
-        # 深度画像から左エリアと右エリアの距離データを抽出
+        # 中央領域の壁の分布を確認して左右判定
+        left_count = np.sum(central_area[:, : central_area.shape[1] // 2])
+        right_count = np.sum(central_area[:, central_area.shape[1] // 2 :])
+
+        # 中央領域に壁がある場合、左右どちらに多いかで判断
+        if np.any(central_area):
+            if left_count > right_count:
+                return self.OBS_POS_LEFT
+            elif right_count > left_count:
+                return self.OBS_POS_RIGHT
+            else:
+                return self.OBS_POS_CENTER
+
+        # 中央領域に壁がない場合、左エリア・右エリアの距離に基づいて壁の位置を判定
         left_depth_values = depth_image[:, : width // 5][left_area]
         right_depth_values = depth_image[:, -width // 5 :][right_area]
 
-        # 外れ値除去のために、手前の壁とみなせる深度範囲（例えば50cm以内）にフィルタ
         depth_threshold = 2000  # 例: 2000mm（2m）以内を壁とみなす
         left_depth_values = left_depth_values[
             (left_depth_values > 0) & (left_depth_values < depth_threshold)
@@ -228,15 +243,12 @@ class Obstacles:
             (right_depth_values > 0) & (right_depth_values < depth_threshold)
         ]
 
-        # 左右のエリアに有効な距離が存在する場合はその最小距離を、存在しない場合は inf を設定
         left_distance = (
             np.min(left_depth_values) if left_depth_values.size > 0 else float("inf")
         )
         right_distance = (
             np.min(right_depth_values) if right_depth_values.size > 0 else float("inf")
         )
-
-        logging.debug(f"WALL L: {left_distance} R: {right_distance}")
 
         # 両方が `inf` の場合は壁が検出されていないため `NONE` を返す
         if left_distance == float("inf") and right_distance == float("inf"):
@@ -291,29 +303,32 @@ class Obstacles:
     def detect_walls(
         self, depth_image: np.ndarray, floor_mask: np.ndarray
     ) -> np.ndarray:
-        """
-        左右のエリアにおいて、深度が徐々に遠くなる部分を壁として検出します。
-        壁の検出は、深度の増加が途切れるまで続けます。
-        壁検出の距離を80cm以内に制限します。
-
-        Args:
-            depth_image (np.ndarray): 深度画像
-
-        Returns:
-            np.ndarray: 壁と判断された部分のマスク（壁がある部分がTrue、それ以外はFalse）
-        """
         wall_mask = np.zeros_like(depth_image, dtype=bool)
         _, width = depth_image.shape
 
-        # 左側の壁検出
-        self._detect_wall_side(
-            depth_image, floor_mask, wall_mask, 0, width // 2, step=1
-        )
-
-        # 右側の壁検出
-        self._detect_wall_side(
-            depth_image, floor_mask, wall_mask, width - 1, width // 2 - 1, step=-1
-        )
+        # 並列実行
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    self._detect_wall_side,
+                    depth_image,
+                    floor_mask,
+                    wall_mask,
+                    0,
+                    width // 2,
+                    1,
+                ),
+                executor.submit(
+                    self._detect_wall_side,
+                    depth_image,
+                    floor_mask,
+                    wall_mask,
+                    width - 1,
+                    width // 2 - 1,
+                    -1,
+                ),
+            ]
+            concurrent.futures.wait(futures)
 
         # 膨張処理と連結成分を使った矩形フィット処理
         return self._dilate_and_fit_rectangle(wall_mask)

@@ -112,8 +112,7 @@ class TargetProcessor:
         """検出されたターゲットから追跡すべきターゲットを選択します。
 
         優先度:
-            1. 前フレームの中心座標Xとバウンディングボックスのサイズが近いもの
-            2. 中心座標Xが近いもの（バウンディングボックスのサイズが大きく異なる場合）
+            最も近いターゲット（バウンディングボックスのサイズが大きい）を選択
 
         Args:
             detected_targets (List[Target]): 検出されたターゲットのリスト
@@ -126,31 +125,8 @@ class TargetProcessor:
             self.current_target = None
             return None
 
-        if self.last_target_center_x is None or self.last_target_center_y is None:
-            # 追跡中のターゲットがない場合、最も大きな面積のターゲットを選択
-            selected_target = self.select_closest_target(detected_targets)
-        else:
-            # 前回のターゲットのサイズと位置に基づきターゲットを選択
-            targets_with_distances = []
-            last_target_area = self.current_target.area if self.current_target else None
-
-            for target in detected_targets:
-                # 中心座標の距離とバウンディングボックスの面積の差を計算
-                center_distance = abs(target.center_x - self.last_target_center_x)
-                area_difference = (
-                    abs(target.area - last_target_area) if last_target_area else 0
-                )
-
-                # 中心座標とサイズが近いターゲットが優先されるようにタプルで保持
-                targets_with_distances.append(
-                    (target, center_distance, area_difference)
-                )
-
-            # 中心座標とバウンディングボックスの大きさが近い順にソート
-            # まず面積差が少ないもの、その後中心座標が近いものを優先
-            selected_target = sorted(
-                targets_with_distances, key=lambda x: (x[2], x[1])
-            )[0][0]
+        # ターゲットが1つ以上検出されている場合、最も大きな面積のターゲットを選択
+        selected_target = self.select_closest_target(detected_targets)
 
         # 選択されたターゲットの情報を更新
         self.current_target = selected_target

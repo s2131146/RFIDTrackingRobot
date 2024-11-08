@@ -40,7 +40,7 @@ CAM_NO = 0
 DEBUG_SLOW_MOTOR = True
 DEBUG_SERIAL = True
 DEBUG_USE_ONLY_WEBCAM = False
-DEBUG_DETECT_OBSTACLES = True
+DEBUG_DETECT_OBSTACLES = False
 
 # Cascade 関連のフラグとリストを削除
 
@@ -332,21 +332,6 @@ class Tracker:
         # フレーム内に障害物が検出されていない場合
         return not self.obs_detected
 
-    def turn_towards_target(self):
-        """障害物回避後に対象に向かってターンする"""
-        if self.lost_target_command == Commands.ROTATE_LEFT:
-            # 左折
-            self.motor_power_l = 50  # 左モーターを低速に
-            self.motor_power_r = 100  # 右モーターを高速に
-        elif self.lost_target_command == Commands.ROTATE_RIGHT:
-            # 右折
-            self.motor_power_l = 100  # 左モーターを高速に
-            self.motor_power_r = 50  # 右モーターを低速に
-        else:
-            # 中央の場合
-            self.motor_power_l = self.default_speed
-            self.motor_power_r = self.default_speed
-
     def apply_motor_wall(self, wall_direction: str) -> Tuple[int, int]:
         """
         壁の位置に基づき、壁沿いに進むためのモーター出力を計算します。
@@ -414,7 +399,7 @@ class Tracker:
         # 線形補間による基礎速度の計算
         base_speed = np.interp(occupancy, occupancy_thresholds, base_speeds)
         # 速度をクランプして 0 〜 100 に制限
-        return max(0, min(100, base_speed))
+        return int(max(0, min(100, base_speed)))
 
     def _adjust_motor_power_based_on_target_position(self, target_x, base_speed):
         """対象の位置に基づいてモーター出力を調整する
@@ -454,27 +439,23 @@ class Tracker:
         if normalized_error < 0:
             # 左に曲がる場合
             self.motor_power_l = max(
-                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
             )
             self.motor_power_r = max(
-                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
             )
         elif normalized_error > 0:
             # 右に曲がる場合
             self.motor_power_r = max(
-                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
             )
             self.motor_power_l = max(
-                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
             )
         else:
             # 中央の場合
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
-
-        # モーター出力を整数値に丸める
-        self.motor_power_l = int(self.motor_power_l)
-        self.motor_power_r = int(self.motor_power_r)
 
     def get_target_pos_str(self, target_center_x):
         return self.target_processor.get_target_pos_str(target_center_x)
@@ -544,8 +525,8 @@ class Tracker:
         self.gui.root.after(
             0,
             self.gui.update_motor_values,
-            int(self.motor_power_l),
-            int(self.motor_power_r),
+            self.motor_power_l,
+            self.motor_power_r,
         )
 
     def update_rfid_power(self):
@@ -608,6 +589,9 @@ class Tracker:
 
         # モーター制御
         self._control_motor_for_target()
+
+        self.motor_power_l = int(self.motor_power_l)
+        self.motor_power_r = int(self.motor_power_r)
 
         # RFIDモードでのターゲット方向送信
         self._send_target_position_if_rfid_mode()
@@ -710,6 +694,10 @@ class Tracker:
                 _, self.depth_frame = result
                 return
             else:
+                if self.auto_stop_obs:
+                    self.auto_stop_obs = False
+                    self.start_motor()
+
                 self.auto_stop_obs = False
                 (
                     self.obs_pos,
@@ -719,8 +707,8 @@ class Tracker:
                     self.avoid_wall,
                 ) = result
 
-        # 壁位置の設定
-        self._update_wall_position(wall)
+            # 壁位置の設定
+            self._update_wall_position(wall)
 
     def _update_wall_position(self, wall):
         """壁の位置に基づいて状態を更新"""
