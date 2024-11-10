@@ -1,8 +1,13 @@
+import re
+import subprocess
+import os
+import sys
 import threading
 import time
 from tkinter import TclError, font
 import cv2
 import numpy as np
+from constants import Commands
 import tqueue
 import tkinter as tk
 from tkinter import ttk
@@ -15,6 +20,16 @@ STICKY_UP = "n"
 STICKY_CENTER = "nsew"
 STICKY_LEFT = "w"
 STICKY_RIGHT = "e"
+
+CONTROL_UP = "up"
+CONTROL_DOWN = "down"
+CONTROL_LEFT = "left"
+CONTROL_RIGHT = "right"
+CONTROL_ROTATE_RIGHT = "rr"
+CONTROL_ROTATE_LEFT = "lr"
+
+AVI_NAME = "tracker.avi"
+MP4_NAME = "tracker.mp4"
 
 
 class GUI:
@@ -44,6 +59,7 @@ class GUI:
 
         self.create_main_frame()
         self.create_control_frame()
+        self.create_control_panel()
 
         self.update_stop()
 
@@ -57,6 +73,8 @@ class GUI:
         self.queue.add("init")
 
     def start_recording(self):
+        self.progress_var = tk.DoubleVar()
+        self.progress_win = None
         self.recording = True
         self.recording_thread = threading.Thread(target=self.record_screen)
         self.recording_thread.start()
@@ -65,11 +83,11 @@ class GUI:
         self.recording = False
         if self.recording_thread is not None:
             self.recording_thread.join()
+            self.__del__()
+            threading.Thread(target=self.start_conversion, daemon=True).start()
 
     def on_closing(self):
         self.stop_recording()
-        self.root.destroy()
-        self.__del__()
 
     def record_screen(self):
         import mss
@@ -87,14 +105,14 @@ class GUI:
 
         # FourCCコードを'MJPG'に設定し、ファイル拡張子を'.avi'に
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-        out_filename = "tracker.avi"
+        out_filename = AVI_NAME
         out = cv2.VideoWriter(out_filename, fourcc, 10.0, (width, height))
 
         sct = mss.mss()
         monitor = {"top": 0, "left": 0, "width": screen_width, "height": screen_height}
 
         # 目標のフレーム間隔（秒）
-        target_frame_interval = 1.0 / 10.0  # 10fps
+        target_frame_interval = 1.0 / 10.0
 
         while self.recording:
             # フレームのキャプチャ開始時間
@@ -119,49 +137,81 @@ class GUI:
         out.release()
         cv2.destroyAllWindows()
 
-    def adjust_video(self, filename, fps):
-        # OpenCVで動画ファイルを読み込み、fpsを修正して新しいファイルとして保存
-        cap = cv2.VideoCapture(filename)
-        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        out = cv2.VideoWriter("tracker.avi", fourcc, fps, (width, height))
+    def show_progress_dialog(self):
+        self.progress_win = tk.Toplevel(self.root)
+        self.progress_win.title("In Progress")
+        self.progress_win.geometry("300x100")
+        tk.Label(self.progress_win, text="Saving video...\nPlease wait...").pack(
+            pady=10
+        )
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            out.write(frame)
+        progress_bar = ttk.Progressbar(
+            self.progress_win,
+            orient="horizontal",
+            length=250,
+            mode="determinate",
+            variable=self.progress_var,
+        )
+        progress_bar.pack(pady=10)
 
+        self.root.update_idletasks()
+
+    def start_conversion(self):
+        frames = self.get_total_frames(AVI_NAME)
+        if frames is None:
+            print("フレーム数の取得に失敗しました")
+            return
+        self.compress_and_convert_to_mp4(frames)
+
+    def get_total_frames(self, input_file):
+        cap = cv2.VideoCapture(input_file)
+        if not cap.isOpened():
+            return None
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        out.release()
-        print(f"フレームレートを {fps:.2f} fps に修正しました")
 
-    def adjust_video_fps(self, filename, fps):
-        # 動画ファイルのフレームレートを変更するために、FFmpegを使用します
-        import subprocess
+        return total_frames
 
-        temp_filename = "temp_" + filename
+    def compress_and_convert_to_mp4(self, frames: int):
+        """AVI形式のファイルをMP4形式に変換し、圧縮します。"""
         command = [
-            "ffmpeg",
-            "-y",
+            "C:/Users/admin/Downloads/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
             "-i",
-            filename,
-            "-filter:v",
-            f"fps={fps}",
-            "-c:v",
+            AVI_NAME,
+            "-vcodec",
             "libx264",
             "-preset",
             "fast",
             "-crf",
-            "28",  # CRF値を高くするとビットレートが下がり、画質も下がる
-            temp_filename,
+            "28",
+            "-y",
+            MP4_NAME,  # 上書き許可
         ]
-        subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        # 元のファイルを置き換え
-        import os
 
-        os.replace(temp_filename, filename)
+        self.show_progress_dialog()
+
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+
+        for line in process.stderr:
+            if "frame=" in line:
+                match = re.search(r"frame=\s*(\d+)", line)
+                if match:
+                    current_frame = int(match.group(1))
+                    self.root.after(
+                        0,
+                        lambda frame=current_frame: self.progress_var.set(
+                            min(frame / frames * 100, 100)
+                        ),
+                    )
+
+        self.root.after(0, self.progress_win.destroy)
+
+        if os.path.exists(AVI_NAME):
+            os.remove(AVI_NAME)
+
+        self.root.destroy()
 
     def create_main_frame(self):
         self.main_frame = tk.Frame(self.root)
@@ -353,6 +403,214 @@ class GUI:
 
         canvas.itemconfig(text_id, text=new_text)
 
+    def create_control_panel(self):
+        self.control_panel_frame = tk.Frame(self.control_frame)
+        self.control_panel_frame.grid(
+            row=6, column=1, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_UP
+        )
+
+        # グリッドを設定して十字型にボタンを配置
+        for i in range(3):
+            self.control_panel_frame.grid_rowconfigure(i, weight=1)
+            self.control_panel_frame.grid_columnconfigure(i, weight=1)
+
+        arrow_font = font.Font(family="Consolas", size=12, weight="bold")
+        button_height = 2
+        button_width = 6
+
+        # 左回転ボタン
+        self.button_rotate_left = tk.Button(
+            self.control_panel_frame,
+            text="↺",  # Unicodeの反時計回りの回転矢印
+            width=button_width,
+            height=button_height,
+            font=arrow_font,
+            bg="SystemButtonFace",
+            activebackground="green",
+            borderwidth=4,  # ボタンの境界線幅を増加
+            relief="solid",  # 境界線を実線に設定
+            highlightbackground="black",  # ハイライト背景色を黒に設定
+            highlightcolor="black",  # ハイライト色を黒に設定
+            highlightthickness=2,  # ハイライトの厚さを設定
+            command=None,  # イベントで制御
+        )
+        self.button_rotate_left.grid(row=0, column=0, padx=5, pady=5)
+
+        # 右回転ボタン
+        self.button_rotate_right = tk.Button(
+            self.control_panel_frame,
+            text="↻",  # Unicodeの時計回りの回転矢印
+            width=button_width,
+            height=button_height,
+            font=arrow_font,
+            bg="SystemButtonFace",
+            activebackground="green",
+            borderwidth=4,  # ボタンの境界線幅を増加
+            relief="solid",  # 境界線を実線に設定
+            highlightbackground="black",  # ハイライト背景色を黒に設定
+            highlightcolor="black",  # ハイライト色を黒に設定
+            highlightthickness=2,  # ハイライトの厚さを設定
+            command=None,  # イベントで制御
+        )
+        self.button_rotate_right.grid(row=0, column=2, padx=5, pady=5)
+
+        # 上ボタン
+        self.button_up = tk.Button(
+            self.control_panel_frame,
+            text="↑",
+            width=button_width,
+            height=button_height,
+            font=arrow_font,
+            bg="SystemButtonFace",
+            activebackground="green",
+            borderwidth=4,  # ボタンの境界線幅を増加
+            relief="solid",  # 境界線を実線に設定
+            highlightbackground="black",  # ハイライト背景色を黒に設定
+            highlightcolor="black",  # ハイライト色を黒に設定
+            highlightthickness=2,  # ハイライトの厚さを設定
+            command=None,  # イベントで制御
+        )
+        self.button_up.grid(row=0, column=1, padx=5, pady=5)
+
+        # 下ボタン
+        self.button_down = tk.Button(
+            self.control_panel_frame,
+            text="↓",
+            width=button_width,
+            height=button_height,
+            font=arrow_font,
+            bg="SystemButtonFace",
+            activebackground="green",
+            borderwidth=4,
+            relief="solid",
+            highlightbackground="black",
+            highlightcolor="black",
+            highlightthickness=2,
+            command=None,
+        )
+        self.button_down.grid(row=1, column=1, padx=5, pady=5)
+
+        # 左ボタン
+        self.button_left = tk.Button(
+            self.control_panel_frame,
+            text="←",
+            width=button_width,
+            height=button_height,
+            font=arrow_font,
+            bg="SystemButtonFace",
+            activebackground="green",
+            borderwidth=4,
+            relief="solid",
+            highlightbackground="black",
+            highlightcolor="black",
+            highlightthickness=2,
+            command=None,
+        )
+        self.button_left.grid(row=1, column=0, padx=5, pady=5)
+
+        # 右ボタン
+        self.button_right = tk.Button(
+            self.control_panel_frame,
+            text="→",
+            width=button_width,
+            height=button_height,
+            font=arrow_font,
+            bg="SystemButtonFace",
+            activebackground="green",
+            borderwidth=4,
+            relief="solid",
+            highlightbackground="black",
+            highlightcolor="black",
+            highlightthickness=2,
+            command=None,
+        )
+        self.button_right.grid(row=1, column=2, padx=5, pady=5)
+
+        # ボタン押下時のイベントをバインド
+        self.button_up.bind("<ButtonPress-1>", lambda e: self.start_moving(CONTROL_UP))
+        self.button_up.bind("<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_UP))
+
+        self.button_down.bind(
+            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_DOWN)
+        )
+        self.button_down.bind(
+            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_DOWN)
+        )
+
+        self.button_left.bind(
+            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_LEFT)
+        )
+        self.button_left.bind(
+            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_LEFT)
+        )
+
+        self.button_right.bind(
+            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_RIGHT)
+        )
+        self.button_right.bind(
+            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_RIGHT)
+        )
+
+        self.button_rotate_left.bind(
+            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_ROTATE_LEFT)
+        )
+        self.button_rotate_left.bind(
+            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_ROTATE_LEFT)
+        )
+
+        self.button_rotate_right.bind(
+            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_ROTATE_RIGHT)
+        )
+        self.button_rotate_right.bind(
+            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_ROTATE_RIGHT)
+        )
+
+        # 移動中かどうかのフラグ
+        self.moving = {
+            CONTROL_UP: False,
+            CONTROL_DOWN: False,
+            CONTROL_LEFT: False,
+            CONTROL_RIGHT: False,
+            CONTROL_ROTATE_LEFT: False,
+            CONTROL_ROTATE_RIGHT: False,
+        }
+
+    default_speed_bk = 0
+
+    def start_moving(self, direction):
+        if not self.moving[direction]:
+            self.default_speed_bk = self.tracker.default_speed
+            self.tracker.default_speed = 250
+            self.moving[direction] = True
+            self.tracker.start_motor()
+            self.tracker.stop_exec_cmd_gui = True
+            self.move(direction)
+
+    def stop_moving(self, direction):
+        self.moving[direction] = False
+
+    def move(self, direction):
+        if not self.moving[direction]:
+            self.tracker.default_speed = self.default_speed_bk
+            self.tracker.stop_exec_cmd_gui = False
+            self.tracker.send(Commands.STOP)
+            return
+
+        if direction == CONTROL_UP:
+            self.tracker.send(Commands.GO_CENTER)
+        elif direction == CONTROL_DOWN:
+            self.tracker.send(Commands.GO_BACK)
+        elif direction == CONTROL_LEFT:
+            self.tracker.send(Commands.GO_LEFT)
+        elif direction == CONTROL_RIGHT:
+            self.tracker.send(Commands.GO_RIGHT)
+        elif direction == CONTROL_ROTATE_LEFT:
+            self.tracker.send(Commands.ROTATE_LEFT)
+        elif direction == CONTROL_ROTATE_RIGHT:
+            self.tracker.send(Commands.ROTATE_RIGHT)
+
+        self.root.after(500, lambda: self.move(direction))
+
     def create_control_frame(self):
         self.control_frame = tk.Frame(self.root)
         self.control_frame.grid(
@@ -392,7 +650,6 @@ class GUI:
         self.command_entry = tk.Entry(self.command_frame, width=25)
         self.command_entry.grid(row=1, column=1, padx=DEF_MARGIN, pady=5)
         self.command_entry.bind("<Return>", self.command_enter_pressed)
-        self.command_entry.focus_set()
 
         self.send_button = ttk.Button(
             self.command_frame, text="Send", command=self.send_command
@@ -499,6 +756,11 @@ class GUI:
         self.command_entry.delete(0, tk.END)
 
     def update_stop(self, connected=True):
+        try:
+            self.root.winfo_exists()
+        except Exception:
+            return
+
         if self.tracker.stop:
             self.update_status("Motor stopped.")
             text, bg_color, fg_color = (
@@ -582,9 +844,12 @@ class GUI:
 
         self.timeline_index += 1
 
-        if key == "s" and self.var_auto_scroll_sent.get():
-            text_widget.see(tk.END)
-        elif key == "r" and self.var_auto_scroll_received.get():
+        if (
+            key == "s"
+            and self.var_auto_scroll_sent.get()
+            or key == "r"
+            and self.var_auto_scroll_received.get()
+        ):
             text_widget.see(tk.END)
 
     def update_rfid_values(self, counts):
@@ -609,7 +874,10 @@ class GUI:
                 green_intensity = min(255, int((count / max_count) * 255))
                 color = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
 
-            canvas.itemconfig(rect_id, fill=color)
+            try:
+                canvas.itemconfig(rect_id, fill=color)
+            except TclError:
+                pass
 
     def update_motor_values(self, left_value, right_value):
         """モーターの速度を更新します。

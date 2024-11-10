@@ -1,5 +1,9 @@
 import os
+import subprocess
+import traceback
 from typing import Tuple
+
+import psutil
 
 # カメラ起動高速化
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -37,10 +41,10 @@ FRAME_HEIGHT = 480
 
 CAM_NO = 0
 
-DEBUG_SLOW_MOTOR = True
+DEBUG_SLOW_MOTOR = False
 DEBUG_SERIAL = True
 DEBUG_USE_ONLY_WEBCAM = False
-DEBUG_DETECT_OBSTACLES = False
+DEBUG_DETECT_OBSTACLES = True
 
 # Cascade 関連のフラグとリストを削除
 
@@ -56,7 +60,8 @@ class Tracker:
         RFID_ONLY = 3
 
     def __init__(self):
-        self.root = self.video_capture = None
+        self.root: tk.Tk
+        self.video_capture = None
         self.frame_width = FRAME_WIDTH
         self.frame_height = FRAME_HEIGHT
         self.d_x = self.d_y = self.face_x = self.face_center_x = 0
@@ -66,6 +71,7 @@ class Tracker:
         self.rfid_reader = None
         self.lost_target_command = Commands.STOP_TEMP
         self.stop_exec_cmd = False
+        self.stop_exec_cmd_gui = False
 
         self.default_speed = 250
         self._def_spd_bk = 0
@@ -297,7 +303,7 @@ class Tracker:
         ):
             return True
 
-        if data != Commands.CHECK:
+        if data != Commands.CHECK and data != Commands.STOP_TEMP:
             self.prev_command = data
 
         ret = self.serial.send_serial(data)
@@ -342,11 +348,11 @@ class Tracker:
         Returns:
             Tuple[int, int]: 左右のモーターの出力（百分率）
         """
-        if wall_direction == Obstacles.OBS_POS_LEFT:
+        if wall_direction == Obstacles.OBS_POS_LEFT and self.motor_power_l > 50:
             # 壁が左側にある場合、右に寄って進む
             self.motor_power_l = 50
             self.motor_power_r = 100
-        elif wall_direction == Obstacles.OBS_POS_RIGHT:
+        elif wall_direction == Obstacles.OBS_POS_RIGHT and self.motor_power_r > 50:
             # 壁が右側にある場合、左に寄って進む
             self.motor_power_l = 100
             self.motor_power_r = 50
@@ -553,14 +559,12 @@ class Tracker:
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
             self.frame = np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
         else:
-            ret, frame = self.video_capture.read()
+            ret, self.frame = self.video_capture.read()
             if not ret:
                 logger.warning("Failed to read frame from webcam.")
                 self.frame = (
                     np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
                 )
-            else:
-                self.frame = cv2.flip(frame, 1)
 
     def execute_rfid_direction(self, rotate=False):
         """RFIDの移動方向を取得して移動指示を送信する"""
@@ -670,7 +674,7 @@ class Tracker:
             if self.RFID_ENABLED:
                 self.execute_rfid_direction()
             else:
-                if not self.stop:
+                if not self.stop and not self.stop_exec_cmd_gui:
                     self.send(self.lost_target_command)
                     self.stop_exec_cmd = True
                     self.motor_power_l = 0
@@ -740,7 +744,7 @@ class Tracker:
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
         if DEBUG_SLOW_MOTOR:
-            self.default_speed = 100
+            self.default_speed = 150
         if self._def_spd_bk != self.default_speed:
             self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
             self._def_spd_bk = self.default_speed
@@ -757,7 +761,12 @@ class Tracker:
             > SERIAL_SEND_MOTOR_INTERVAL
         ):
             self.interval_serial_send_motor_start_time = current_time
-            if not self.stop and not self.stop_temp and not self.stop_exec_cmd:
+            if (
+                not self.stop
+                and not self.stop_temp
+                and not self.stop_exec_cmd
+                and not self.stop_exec_cmd_gui
+            ):
                 self.send((Commands.L_SPEED, self.motor_power_l))
                 self.bkl = self.motor_power_l
                 self.send((Commands.R_SPEED, self.motor_power_r))
@@ -818,7 +827,7 @@ class Tracker:
             f"avoid: {self.avoid_wall} no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
             f"detecting: {round(self.time_detected, 2):.2f}\n"
             f"self.RFID_ENABLED: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} def_speed: {self.default_speed}\n"
-            f"auto_stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%}"
+            f"auto_stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%} exec_stop: {self.stop_exec_cmd}"
         )
         self.print_d(debug_text)
         self.print_key_binds()
@@ -832,7 +841,6 @@ class Tracker:
     def close(self):
         logger.info("Closing application")
         self.stop_motor()
-        self.obstacles.close()
         self.serial.close()
 
         if DEBUG_USE_ONLY_WEBCAM:
@@ -915,10 +923,27 @@ class Tracker:
         tracker_thread.start()
 
         self.root.mainloop()
-        self.close()
+
+
+def is_process_running(process_name):
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = proc.info.get("cmdline")
+            if cmdline and process_name in cmdline:
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return False
+
+
+def run_robot_if_needed():
+    if not is_process_running("tracker_robot_side.py"):
+        logger.info("Robot process is not running. Starting...")
+        subprocess.Popen(["python", "tracker_robot_side.py"])
 
 
 def main():
+    run_robot_if_needed()
     tracker = Tracker()
     logger.info("Initializing GUI")
     tracker.root = tk.Tk()
@@ -930,6 +955,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.exception("An error occurred in the main execution loop.")
+        main()
+    except Exception:
+        logger.error(traceback.format_exc())

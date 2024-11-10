@@ -20,9 +20,9 @@ class Obstacles:
         logger: logging.Logger,
         obstacle_distance_threshold: float = 500.0,
         min_obstacle_size: Tuple[int, int] = (50, 30),
-        tolerance: float = 25.0,
-        min_continuous_increase: int = 20,
-        wall_distance_threshold: float = 20000.0,
+        tolerance: float = 30.0,
+        min_continuous_increase: int = 25,
+        wall_distance_threshold: float = 700.0,
     ):
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -64,8 +64,7 @@ class Obstacles:
             ignore_x_end = w
 
         target_x = target_x + (self.frame_width // 2)
-        depth_image = cv2.flip(depth_image, 1)
-        depth_image = depth_image[:, :-25]
+        depth_image = depth_image[:, 25:]
 
         # 障害物が目の前か
         obstacle_mask_full = depth_image < self.obstacle_distance_threshold
@@ -214,15 +213,14 @@ class Obstacles:
             str: 壁の位置（LEFT, RIGHT, CENTER, NONE）
         """
         _, width = wall_mask.shape
-        left_area = wall_mask[:, : width // 5]
-        right_area = wall_mask[:, -width // 5 :]
+        left_area = wall_mask[:, : width // 2]  # 左半分
+        right_area = wall_mask[:, width // 2 :]  # 右半分
         central_area = wall_mask[:, self.central_start : self.central_end]  # 中央領域
 
-        # 中央領域の壁の分布を確認して左右判定
+        # 中央領域に壁が存在する場合、左右の壁の分布に基づいて判定
         left_count = np.sum(central_area[:, : central_area.shape[1] // 2])
         right_count = np.sum(central_area[:, central_area.shape[1] // 2 :])
 
-        # 中央領域に壁がある場合、左右どちらに多いかで判断
         if np.any(central_area):
             if left_count > right_count:
                 return self.OBS_POS_LEFT
@@ -231,9 +229,19 @@ class Obstacles:
             else:
                 return self.OBS_POS_CENTER
 
-        # 中央領域に壁がない場合、左エリア・右エリアの距離に基づいて壁の位置を判定
-        left_depth_values = depth_image[:, : width // 5][left_area]
-        right_depth_values = depth_image[:, -width // 5 :][right_area]
+        # 左半分で壁が50%以上占めている場合に左と判定
+        left_coverage = np.sum(left_area) / left_area.size
+        if left_coverage > 0.5:
+            return self.OBS_POS_LEFT
+
+        # 右半分で壁が50%以上占めている場合に右と判定
+        right_coverage = np.sum(right_area) / right_area.size
+        if right_coverage > 0.5:
+            return self.OBS_POS_RIGHT
+
+        # 中央に壁がない場合、距離に基づいて壁の位置を判定
+        left_depth_values = depth_image[:, : width // 5][wall_mask[:, : width // 5]]
+        right_depth_values = depth_image[:, -width // 5 :][wall_mask[:, -width // 5 :]]
 
         depth_threshold = 2000  # 例: 2000mm（2m）以内を壁とみなす
         left_depth_values = left_depth_values[
@@ -253,6 +261,11 @@ class Obstacles:
         # 両方が `inf` の場合は壁が検出されていないため `NONE` を返す
         if left_distance == float("inf") and right_distance == float("inf"):
             return self.OBS_POS_NONE
+
+        if left_distance == float("inf"):
+            return self.OBS_POS_RIGHT
+        elif right_distance == float("inf"):
+            return self.OBS_POS_LEFT
 
         # 距離がほぼ等しい場合のみ `CENTER` を返す
         if abs(left_distance - right_distance) <= 30:
@@ -346,6 +359,11 @@ class Obstacles:
                 continue
 
             for i in range(1, len(depth_values)):
+                if depth_values[i] == float("inf") or depth_values[i - 1] == float(
+                    "inf"
+                ):
+                    continue
+                depth_values = depth_values.astype(np.int64)
                 if 0 < depth_values[i] - depth_values[i - 1] < self.tolerance:
                     wall_mask[:, col] = True  # 壁としてマスク
                 else:

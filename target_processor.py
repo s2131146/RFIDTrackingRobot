@@ -45,7 +45,6 @@ class TargetProcessor:
         self.model = model.to("cuda")
 
         self.prev_command = Commands.STOP_TEMP
-        self.lost_target_command = Commands.STOP_TEMP
 
         self.last_target_features = None  # 直前のターゲットの特徴を保存
         self.current_target = None  # 現在追跡中のターゲット
@@ -98,10 +97,10 @@ class TargetProcessor:
 
         if x_centered < -central_threshold:
             target_position = Commands.GO_LEFT
-            self.tracker.lost_target_command = Commands.ROTATE_LEFT
+            self.tracker.lost_target_command = Commands.ROTATE_RIGHT
         elif x_centered > central_threshold:
             target_position = Commands.GO_RIGHT
-            self.tracker.lost_target_command = Commands.ROTATE_RIGHT
+            self.tracker.lost_target_command = Commands.ROTATE_LEFT
         else:
             target_position = Commands.GO_CENTER
             self.tracker.lost_target_command = Commands.STOP_TEMP

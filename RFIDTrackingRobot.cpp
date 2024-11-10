@@ -102,6 +102,7 @@ namespace RFIDTR {
         int speed = fixed ? percent : ((float)(percent) / 100.0) * DEFAULT_SPEED;
         targetLeftSpeed = speed;
 
+        leftSpeedChanging = false;
         if (currentLeftSpeed == 0 || targetLeftSpeed == 0) {
             leftSpeedChanging = true;
             leftSpeedChangeStartTime = millis();
@@ -111,7 +112,7 @@ namespace RFIDTR {
             currentLeftSpeed = speed;
             Omni.wheelLeftSetSpeedMMPS(speed, invert ? DIR_BACKOFF : DIR_ADVANCE);
         }
-
+        
         Omni.PIDRegulate();
     }
 
@@ -124,6 +125,7 @@ namespace RFIDTR {
         int speed = fixed ? percent : ((float)(percent) / 100.0) * DEFAULT_SPEED;
         targetRightSpeed = speed;
 
+        rightSpeedChanging = false;
         if (currentRightSpeed == 0 || targetRightSpeed == 0) {
             rightSpeedChanging = true;
             rightSpeedChangeStartTime = millis();
@@ -141,7 +143,6 @@ namespace RFIDTR {
         if (operationMode == PID) {
             setLeftMotorSpeed(0);
             setRightMotorSpeed(100);
-            Serial.println("Action: Rotate Left");
         } else {
             attachAll();
             wheels[MOTOR_RIGHT].write(FORWARD);
@@ -153,7 +154,6 @@ namespace RFIDTR {
         if (operationMode == PID) {
             setRightMotorSpeed(0);
             setLeftMotorSpeed(100);
-            Serial.println("Action: Rotate Right");
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(FORWARD);
@@ -165,7 +165,6 @@ namespace RFIDTR {
         if (operationMode == PID) {
             setLeftMotorSpeed(100);
             setRightMotorSpeed(100);
-            Serial.println("Action: Forward");
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(REVERSE);
@@ -175,8 +174,7 @@ namespace RFIDTR {
 
     void goBack() {
         if (operationMode == PID) {
-            Omni.setCarBackoff(currentSpeed);
-            Serial.println("Action: Go Back");
+            Omni.setCarBackoff(150);
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(FORWARD);
@@ -188,7 +186,6 @@ namespace RFIDTR {
         if (operationMode == PID) {
             setLeftMotorSpeed(0);
             setRightMotorSpeed(0);
-            Serial.println("All motors stopped.");
         } else {
             detachAll();
         }
@@ -211,6 +208,7 @@ namespace RFIDTR {
         if (operationMode == PID) {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
+            stop();
             setRightMotorSpeed(150, false, true);
             setLeftMotorSpeed(150, true, true);
         } else {

@@ -883,3 +883,6 @@ models/yolov10x.pt
 robot.log
 temp_tracker.avi
 tracker.avi
+tracker_obs.avi
+tracker.mp4
+__pycache__/gui.cpython-310.pyc

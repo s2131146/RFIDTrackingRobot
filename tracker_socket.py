@@ -149,7 +149,9 @@ class TrackerSocket:
                 self.queue.add(cid, value_bool)
 
     async def loop_serial(self):
-        while True:
+        self.active_loop = True
+
+        while self.active_loop:
             try:
                 if not self.ser_connected and not await self.connect_socket():
                     continue
@@ -158,10 +160,9 @@ class TrackerSocket:
                 if not data:
                     continue
 
-                try:
-                    self.process_data(data)
-                except Exception as e:
-                    logger.error(e)
+                self.process_data(data)
+            except ConnectionAbortedError:
+                return
             except Exception:
                 logger.error(
                     "[Socket] An error occured at loop_serial: {}".format(
@@ -235,7 +236,6 @@ class TrackerSocket:
                     logger.info(res)
             if res is None:
                 logger.error("[Socket] No connection now")
-                self.ser_connected = False
             return True
         except socket.error as e:
             self.ser_connected = False
@@ -292,4 +292,5 @@ class TrackerSocket:
 
     def close(self):
         self.send_data("close:")
+        self.active_loop = False
         self.client_socket.close()

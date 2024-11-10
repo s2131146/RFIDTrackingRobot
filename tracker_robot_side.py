@@ -1,4 +1,5 @@
 import socket
+import sys
 import traceback
 import serial
 import string
@@ -18,7 +19,7 @@ if os.path.exists(LOG_FILENAME):
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[Socket %(asctime)s.%(msecs)03d] %(message)s",
+    format="[Robot   %(asctime)s.%(msecs)03d] INFO: %(message)s",
     datefmt="%H:%M:%S",
     handlers=[
         logging.FileHandler(LOG_FILENAME, mode="w"),
@@ -50,6 +51,9 @@ class TrackerSocketRobot:
         cmd_id = parts[1] if len(parts) > 1 else 0
         remaining_parts = parts[2:] if len(parts) > 2 else ""
 
+        if len(remaining_parts) == 0:
+            return
+
         if "\n" in remaining_parts[-1]:
             last_part = remaining_parts[-1].strip()
             remaining_parts[-1] = last_part
@@ -75,7 +79,8 @@ class TrackerSocketRobot:
 
     def send_to_host(self, data, id=-1, cmd=None, wo=False):
         send_str = "{}:{}:{}".format(cmd if cmd is not None else "force", id, data)
-        pr("Send to client: {}".format(send_str), wo)
+        if data is not True:
+            pr("Send to client: {}".format(send_str), wo)
         try:
             send_data(send_str.encode())
         except socket.timeout:
@@ -349,3 +354,5 @@ if __name__ == "__main__":
     pr("Startup completed. Elapsed: {}ms".format(math.floor((time.time() - s) * 1000)))
     while True:
         main()
+        if not (len(sys.argv) > 1 and sys.argv[1] == "--no_abort"):
+            break

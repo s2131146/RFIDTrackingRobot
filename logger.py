@@ -13,9 +13,12 @@ file_handler = logging.FileHandler(LOG_FILENAME)
 file_handler.setLevel(logging.DEBUG)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
+console_handler.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+formatter = logging.Formatter(
+    "[Tracker %(asctime)s.%(msecs)03d] %(levelname)s: %(message)s"
+)
+formatter.datefmt = "%H:%M:%S"
 file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
 
