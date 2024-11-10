@@ -194,6 +194,7 @@ def init():
     while True:
         try:
             client_socket, client_address = server_socket.accept()
+            client_socket.settimeout(2)
             break
         except socket.timeout:
             continue

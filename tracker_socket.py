@@ -62,6 +62,8 @@ class TrackerSocket:
             return None
 
     def test_connect(self):
+        if not self.active_loop:
+            return
         try:
             test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             test.settimeout(0.5)

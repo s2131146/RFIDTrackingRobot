@@ -141,9 +141,10 @@ class GUI:
         self.progress_win = tk.Toplevel(self.root)
         self.progress_win.title("In Progress")
         self.progress_win.geometry("300x100")
-        tk.Label(self.progress_win, text="Saving video...\nPlease wait...").pack(
-            pady=10
-        )
+        tk.Label(
+            self.progress_win,
+            text="Saving video...\nPlease wait...",
+        ).pack(pady=10)
 
         progress_bar = ttk.Progressbar(
             self.progress_win,
@@ -202,7 +203,7 @@ class GUI:
                     self.root.after(
                         0,
                         lambda frame=current_frame: self.progress_var.set(
-                            min(frame / frames * 100, 100)
+                            int(min(frame / frames * 100, 100))
                         ),
                     )
 

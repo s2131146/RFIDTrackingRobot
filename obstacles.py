@@ -21,8 +21,8 @@ class Obstacles:
         obstacle_distance_threshold: float = 500.0,
         min_obstacle_size: Tuple[int, int] = (50, 30),
         tolerance: float = 30.0,
-        min_continuous_increase: int = 25,
-        wall_distance_threshold: float = 700.0,
+        min_continuous_increase: int = 20,
+        wall_distance_threshold: float = 1000.0,
     ):
         self.frame_width = frame_width
         self.frame_height = frame_height
