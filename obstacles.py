@@ -1,6 +1,5 @@
 import time
 from typing import ClassVar, Counter, Optional, Tuple
-import concurrent.futures
 import cv2
 import numpy as np
 import logging
@@ -25,6 +24,7 @@ class Obstacles:
     OBS_POS_RIGHT: ClassVar[str] = "RIGHT"
     OBS_POS_NONE: ClassVar[str] = "NONE"
     OBS_POS_FULL: ClassVar[str] = "FULL"
+    OBS_POS_PARALLEL: ClassVar[str] = "PARALLEL"
 
     def __init__(
         self,
@@ -51,7 +51,7 @@ class Obstacles:
             wall_distance_threshold (float): 壁とみなす深度の閾値（ミリメートル単位）。デフォルトは1000.0。
         """
         # フレームの幅と高さを設定
-        self.frame_width = frame_width
+        self.frame_width = frame_width - 25
         self.frame_height = frame_height
         # ロガーを設定
         self.logger = logger
@@ -79,10 +79,22 @@ class Obstacles:
         self.last_wall_position = self.OBS_POS_NONE
         # 最後に壁を回避したかどうか
         self.last_wall_avoid = False
+        self.wall_parallel_history = []
+        # 最後に検出された壁並行状態
+        self.last_wall_parallel = False
 
         # フレームの中央20%の領域を計算
         self.central_start = int(self.frame_width * 0.4)
         self.central_end = int(self.frame_width * 0.6)
+
+        self.left_center_start = self.central_start * 4 // 10
+        self.left_center_end = self.central_start * 6 // 10
+        self.right_center_start = (
+            self.central_end + (self.frame_width - self.central_end) * 4 // 10
+        )
+        self.right_center_end = (
+            self.central_end + (self.frame_width - self.central_end) * 6 // 10
+        )
 
         # 障害物とみなす最小サイズを設定
         self.min_obstacle_size = min_obstacle_size
@@ -94,7 +106,7 @@ class Obstacles:
         depth_image: np.ndarray,
         target_x: int,
         target_bbox=None,
-    ) -> Tuple[str, bool, Optional[np.ndarray], str, bool]:
+    ) -> Tuple[str, bool, Optional[np.ndarray], str, bool, bool]:
         """
         深度画像を処理して、障害物の位置、壁の位置、回避すべきかを判断します。
 
@@ -137,7 +149,11 @@ class Obstacles:
 
         # 壁を検出
         wall_mask = self.detect_walls(depth_image, floor_mask)
+        wall_mask = self._remove_wall_noise(wall_mask, min_continuous_pixels=20)
         wall_position = self.determine_wall_position(depth_image, wall_mask)
+        wall_parallel = True if wall_position[1] == self.OBS_POS_PARALLEL else False
+        wall_position = wall_position[0]
+        self.wall_parallel_history.append(wall_parallel)
 
         # 中央領域に壁が存在するかをチェック
         central_area = wall_mask[:, self.central_start : self.central_end]
@@ -185,6 +201,7 @@ class Obstacles:
         most_common_direction = self.last_direction
         most_common_wall_position = self.last_wall_position
         most_common_avoid_wall = self.last_wall_avoid
+        most_common_wall_parallel = self.last_wall_parallel
         if current_time - self.last_detection_time >= self.detection_interval:
             # 最も頻出する障害物の方向を取得
             most_common_direction = Counter(self.directions_history).most_common(1)[0][
@@ -204,10 +221,17 @@ class Obstacles:
             ][0]
             self.last_wall_avoid = most_common_avoid_wall
 
+            # 壁の並行状態の最頻値を取得
+            most_common_wall_parallel = Counter(self.wall_parallel_history).most_common(
+                1
+            )[0][0]
+            self.last_wall_parallel = most_common_wall_parallel
+
             # 履歴をリセットして次の集計に備える
             self.directions_history.clear()
             self.wall_positions_history.clear()
             self.avoid_walls_history.clear()
+            self.wall_parallel_history.clear()
             self.last_detection_time = current_time
 
         # 障害物と床を可視化（障害物は赤色、床は青色で塗りつぶし）
@@ -234,6 +258,7 @@ class Obstacles:
                     obstacle_visual,
                     most_common_wall_position,
                     most_common_avoid_wall,
+                    most_common_wall_parallel,
                 )
 
         # 最終的な結果を返す
@@ -243,6 +268,7 @@ class Obstacles:
             obstacle_visual,
             most_common_wall_position,
             most_common_avoid_wall,
+            most_common_wall_parallel,
         )
 
     def determine_obstacle_position_full(self, obstacle_mask: np.ndarray) -> bool:
@@ -266,51 +292,173 @@ class Obstacles:
 
         return False
 
+    def _remove_wall_noise(
+        self, wall_mask: np.ndarray, min_continuous_pixels: int = 10
+    ) -> np.ndarray:
+        """
+        壁マスクのノイズを除去し、ある程度連続した壁のみを残します。
+
+        引数:
+            wall_mask (np.ndarray): 壁と判断された部分のマスク。
+            min_continuous_pixels (int): 壁と判断するための最小連続ピクセル数。デフォルトは10。
+
+        戻り値:
+            np.ndarray: ノイズ除去後の壁マスク。
+        """
+        # 水平方向の連続ピクセル数をカウントしてノイズを除去
+        cleaned_mask = np.zeros_like(wall_mask, dtype=bool)
+        for row in range(wall_mask.shape[0]):
+            continuous_count = 0
+            for col in range(wall_mask.shape[1]):
+                if wall_mask[row, col]:
+                    continuous_count += 1
+                else:
+                    if continuous_count >= min_continuous_pixels:
+                        cleaned_mask[row, col - continuous_count : col] = True
+                    continuous_count = 0
+            # 最後の連続領域がノイズ除去条件を満たす場合
+            if continuous_count >= min_continuous_pixels:
+                cleaned_mask[row, wall_mask.shape[1] - continuous_count :] = True
+
+        return cleaned_mask
+
     def determine_wall_position(
         self, depth_image: np.ndarray, wall_mask: np.ndarray
-    ) -> str:
+    ) -> Tuple[str, Optional[str]]:
         """
         壁の位置を `wall_mask` と `depth_image` に基づいて判定します。
-        中央領域に壁がある場合、左右の位置に基づいて左右の壁位置を決定します。
 
         引数:
             depth_image (np.ndarray): 深度画像。
             wall_mask (np.ndarray): 壁と判断された部分のマスク。
 
         戻り値:
-            str: 壁の位置（LEFT, RIGHT, CENTER, NONE）。
+            Tuple[str, Optional[str]]: 壁の位置（LEFT, RIGHT, CENTER, NONE）および、左右両方に壁がある場合のPARALLEL状態。
         """
-        _, width = wall_mask.shape
-        # 左右と中央の領域を分割
-        left_area = wall_mask[:, : width // 2]  # 左半分
-        right_area = wall_mask[:, width // 2 :]  # 右半分
-        central_area = wall_mask[:, self.central_start : self.central_end]  # 中央領域
+        # 中央領域に壁が存在するか確認
+        central_position = self._check_central_area(wall_mask)
+        if central_position:
+            return central_position
 
-        # 中央領域に壁が存在する場合、左右の壁の分布に基づいて判定
+        # 左右の中央20%領域の範囲を設定し、占有率に基づいて並行壁を確認
+        parallel_position = self._check_parallel_position(wall_mask)
+        if parallel_position:
+            return parallel_position
+
+        # 左右領域のカバレッジに基づいて判定
+        wall_position = self._check_coverage_based_position(wall_mask)
+        if wall_position:
+            return wall_position
+
+        # 左右に壁がない場合、深度に基づいて位置を判定
+        return self._check_depth_based_position(depth_image, wall_mask)
+
+    def _check_central_area(
+        self, wall_mask: np.ndarray
+    ) -> Optional[Tuple[str, Optional[str]]]:
+        """
+        中央領域に壁が存在するかを確認し、存在する場合は左右に基づいて位置を返します。
+
+        引数:
+            wall_mask (np.ndarray): 壁と判断された部分のマスク。
+
+        戻り値:
+            Optional[Tuple[str, Optional[str]]]: 壁の位置（LEFT, RIGHT, CENTER, NONE）または None。
+        """
+        central_area = wall_mask[:, self.central_start : self.central_end]
         left_count = np.sum(central_area[:, : central_area.shape[1] // 2])
         right_count = np.sum(central_area[:, central_area.shape[1] // 2 :])
 
         if np.any(central_area):
             if left_count > right_count:
-                return self.OBS_POS_LEFT
+                return self.OBS_POS_LEFT, None
             elif right_count > left_count:
-                return self.OBS_POS_RIGHT
+                return self.OBS_POS_RIGHT, None
             else:
-                return self.OBS_POS_CENTER
+                return self.OBS_POS_CENTER, None
+        return None
 
-        # 左右の壁のカバレッジ率を計算
+    def _check_coverage_based_position(
+        self, wall_mask: np.ndarray
+    ) -> Optional[Tuple[str, Optional[str]]]:
+        """
+        左右の領域の壁のカバレッジ率に基づいて位置を判定します。
+
+        引数:
+            wall_mask (np.ndarray): 壁と判断された部分のマスク。
+
+        戻り値:
+            Optional[Tuple[str, Optional[str]]]: 壁の位置（LEFT, RIGHT, CENTER, NONE）または None。
+        """
+        left_area = wall_mask[:, : self.central_start]
+        right_area = wall_mask[:, self.central_end :]
+
         left_coverage = np.sum(left_area) / left_area.size
         right_coverage = np.sum(right_area) / right_area.size
 
-        # 左右どちらかが50%以上を占めていれば、その方向を返す
-        if left_coverage > 0.5:
-            return self.OBS_POS_LEFT
-        if right_coverage > 0.5:
-            return self.OBS_POS_RIGHT
+        if left_coverage > 0.5 and right_coverage > 0.5:
+            return self.OBS_POS_CENTER, None
+        elif left_coverage > 0.5:
+            return self.OBS_POS_LEFT, None
+        elif right_coverage > 0.5:
+            return self.OBS_POS_RIGHT, None
+        return None
 
-        # 中央に壁がない場合、深度に基づいて壁の位置を判定
-        left_depth_values = depth_image[:, : width // 5][wall_mask[:, : width // 5]]
-        right_depth_values = depth_image[:, -width // 5 :][wall_mask[:, -width // 5 :]]
+    def _check_parallel_position(
+        self, wall_mask: np.ndarray
+    ) -> Optional[Tuple[str, Optional[str]]]:
+        """
+        左右の中央20%領域に壁がある場合、並行して壁が存在することを示すPARALLELを返します。
+
+        引数:
+            wall_mask (np.ndarray): 壁と判断された部分のマスク。
+
+        戻り値:
+            Optional[Tuple[str, Optional[str]]]: 並行位置（LEFT, RIGHT, CENTER, PARALLEL）または None。
+        """
+        left_center_area = wall_mask[:, self.left_center_start : self.left_center_end]
+        right_center_area = wall_mask[
+            :, self.right_center_start : self.right_center_end
+        ]
+
+        # 左側の壁の並行状態の判定
+        left_parallel = np.any(left_center_area) and not np.any(
+            wall_mask[:, self.left_center_end : self.central_start]
+        )
+
+        # 右側の壁の並行状態の判定
+        right_parallel = np.any(right_center_area) and not np.any(
+            wall_mask[:, self.central_end : self.right_center_start]
+        )
+
+        # 両側の条件が満たされた場合のみ、PARALLELを返す
+        if left_parallel and right_parallel:
+            return self.OBS_POS_CENTER, self.OBS_POS_PARALLEL
+        elif left_parallel:
+            return self.OBS_POS_LEFT, self.OBS_POS_PARALLEL
+        elif right_parallel:
+            return self.OBS_POS_RIGHT, self.OBS_POS_PARALLEL
+        return None
+
+    def _check_depth_based_position(
+        self, depth_image: np.ndarray, wall_mask: np.ndarray
+    ) -> Tuple[str, Optional[str]]:
+        """
+        左右の深度に基づいて壁の位置を判定します。
+
+        引数:
+            depth_image (np.ndarray): 深度画像。
+            wall_mask (np.ndarray): 壁と判断された部分のマスク。
+
+        戻り値:
+            Tuple[str, Optional[str]]: 壁の位置（LEFT, RIGHT, CENTER, NONE）。
+        """
+        left_depth_values = depth_image[:, : self.central_start][
+            wall_mask[:, : self.central_start]
+        ]
+        right_depth_values = depth_image[:, self.central_end :][
+            wall_mask[:, self.central_end :]
+        ]
 
         depth_threshold = 2000  # 2000mm（2m）以内を壁とみなす
         left_depth_values = left_depth_values[
@@ -320,7 +468,6 @@ class Obstacles:
             (right_depth_values > 0) & (right_depth_values < depth_threshold)
         ]
 
-        # 左右の最小深度を取得
         left_distance = (
             np.min(left_depth_values) if left_depth_values.size > 0 else float("inf")
         )
@@ -328,23 +475,28 @@ class Obstacles:
             np.min(right_depth_values) if right_depth_values.size > 0 else float("inf")
         )
 
-        # 両方が無限大の場合、壁が検出されていないためNONEを返す
         if left_distance == float("inf") and right_distance == float("inf"):
-            return self.OBS_POS_NONE
-
-        # 一方が無限大の場合、もう一方の方向を返す
+            return self.OBS_POS_NONE, None
         if left_distance == float("inf"):
-            return self.OBS_POS_RIGHT
+            return self.OBS_POS_RIGHT, None
         elif right_distance == float("inf"):
-            return self.OBS_POS_LEFT
+            return self.OBS_POS_LEFT, None
 
-        # 距離がほぼ等しい場合はCENTERを返す
-        if abs(left_distance - right_distance) <= 30:
-            return self.OBS_POS_CENTER
-        elif left_distance < right_distance:
-            return self.OBS_POS_LEFT
+        left_occupancy = (
+            np.sum(wall_mask[:, : self.central_start])
+            / wall_mask[:, : self.central_start].size
+        )
+        right_occupancy = (
+            np.sum(wall_mask[:, self.central_end :])
+            / wall_mask[:, self.central_end :].size
+        )
+
+        if abs(left_occupancy - right_occupancy) <= 0.1:
+            return self.OBS_POS_CENTER, None
+        elif left_occupancy > right_occupancy:
+            return self.OBS_POS_LEFT, None
         else:
-            return self.OBS_POS_RIGHT
+            return self.OBS_POS_RIGHT, None
 
     def fit_rectangle(self, obstacle_mask: np.ndarray) -> np.ndarray:
         """
@@ -472,7 +624,7 @@ class Obstacles:
             depth_values = depth_image[:, col]
             depth_values = depth_values[
                 (depth_values > 0)
-                & (depth_values < 65535)
+                & (depth_values < 0xFFFF)
                 & (depth_values <= depth_threshold)
                 & (~floor_mask[:, col])
             ]
@@ -623,14 +775,14 @@ class Obstacles:
             depth_rgb,
             (self.central_start, 0),
             (self.central_start, self.frame_height),
-            (255, 0, 165),
+            (165, 255, 0),
             2,
         )
         cv2.line(
             depth_rgb,
             (self.central_end, 0),
             (self.central_end, self.frame_height),
-            (255, 0, 165),
+            (165, 255, 0),
             2,
         )
         cv2.line(
@@ -649,6 +801,35 @@ class Obstacles:
         )
         cv2.line(
             depth_rgb, (target_x, 0), (target_x, self.frame_height), (0, 255, 0), 2
+        )
+
+        cv2.line(
+            depth_rgb,
+            (self.left_center_start, 0),
+            (self.left_center_start, self.frame_height),
+            (255, 0, 255),
+            2,
+        )
+        cv2.line(
+            depth_rgb,
+            (self.left_center_end, 0),
+            (self.left_center_end, self.frame_height),
+            (255, 0, 255),
+            2,
+        )
+        cv2.line(
+            depth_rgb,
+            (self.right_center_start, 0),
+            (self.right_center_start, self.frame_height),
+            (255, 0, 255),
+            2,
+        )
+        cv2.line(
+            depth_rgb,
+            (self.right_center_end, 0),
+            (self.right_center_end, self.frame_height),
+            (255, 0, 255),
+            2,
         )
 
         # ターゲット位置をテキストで表示

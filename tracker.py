@@ -129,6 +129,7 @@ class Tracker:
         self.obs_pos = Obstacles.OBS_POS_NONE
         self.wall = None
         self.avoid_wall = False
+        self.wall_parallel = False
 
         self.last_target_direction = (
             None  # ターゲットが最後にいた方向 ('LEFT' または 'RIGHT')
@@ -709,6 +710,7 @@ class Tracker:
                     self.depth_frame,
                     wall,
                     self.avoid_wall,
+                    self.wall_parallel,
                 ) = result
 
             # 壁位置の設定
@@ -733,6 +735,12 @@ class Tracker:
         # 壁を回避する場合
         if self.wall != Obstacles.OBS_POS_NONE and self.avoid_wall:
             self.apply_motor_wall(self.wall)
+
+        # 平行に進む
+        if self.wall_parallel:
+            base_speed = self._calculate_base_speed()
+            self.motor_power_l = base_speed
+            self.motor_power_r = base_speed
 
     def _send_target_position_if_rfid_mode(self):
         """RFIDモード時にターゲット方向を送信"""
@@ -826,7 +834,7 @@ class Tracker:
             f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
             f"avoid: {self.avoid_wall} no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
             f"detecting: {round(self.time_detected, 2):.2f}\n"
-            f"self.RFID_ENABLED: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} def_speed: {self.default_speed}\n"
+            f"RFID: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} def_speed: {self.default_speed} parallel: {self.wall_parallel}\n"
             f"auto_stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%} exec_stop: {self.stop_exec_cmd}"
         )
         self.print_d(debug_text)
