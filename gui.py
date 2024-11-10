@@ -812,7 +812,10 @@ class GUI:
             self.label_wheel.config(text=self.queue.get("g"))
 
     def update_seg(self, seg):
-        self.label_seg.config(text=seg)
+        try:
+            self.label_seg.config(text=seg)
+        except TclError:
+            pass
 
     def update_frame(self, frame, depth_frame):
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
