@@ -1,9 +1,11 @@
 import math
 import cv2
 from ultralytics import YOLO
-from constants import Commands
+from constants import Commands, Position
 import time
 from typing import List, Tuple, Optional
+
+import tracker
 
 
 class Target:
@@ -96,13 +98,21 @@ class TargetProcessor:
         central_threshold = self.frame_width // 6
 
         if x_centered < -central_threshold:
-            target_position = Commands.GO_LEFT
-            self.tracker.lost_target_command = Commands.ROTATE_RIGHT
+            target_position = Position.LEFT
+            self.tracker.lost_target_command = (
+                Commands.ROTATE_LEFT
+                if not tracker.DEBUG_INVERT_MOTOR
+                else Commands.ROTATE_RIGHT
+            )
         elif x_centered > central_threshold:
-            target_position = Commands.GO_RIGHT
-            self.tracker.lost_target_command = Commands.ROTATE_LEFT
+            target_position = Position.RIGHT
+            self.tracker.lost_target_command = (
+                Commands.ROTATE_RIGHT
+                if not tracker.DEBUG_INVERT_MOTOR
+                else Commands.ROTATE_LEFT
+            )
         else:
-            target_position = Commands.GO_CENTER
+            target_position = Position.CENTER
             self.tracker.lost_target_command = Commands.STOP_TEMP
 
         return target_position
@@ -289,13 +299,16 @@ class TargetProcessor:
 
     def draw_all_targets(self, detected_targets, selected_target, frame):
         """
-        対象を全て描画します。選択された対象は緑色、それ以外は青色で囲み、'HUMAN'と表示します。
+        対象を全て描画します。選択された対象は緑色、それ以外は青色で囲み、'PERSON'と表示します。
 
         Args:
             detected_targets (List[Target]): 検出された対象のリスト
             selected_target (Target): 選択された対象
             frame: MatLike
         """
+        detected_targets = [
+            target for target in detected_targets if target != selected_target
+        ]
         for target in detected_targets:
             if target == selected_target:
                 color = (0, 255, 0)  # 緑色 (BGR形式)
@@ -347,7 +360,6 @@ class TargetProcessor:
                     coords = box.xyxy[0].tolist()
                     x1, y1, x2, y2 = map(int, coords)
 
-                    # 服の色などの特徴を抽出するロジックをここに追加
                     # 例として、バウンディングボックス内の平均色を服の色とする
                     bbox = frame[y1:y2, x1:x2]
                     if bbox.size == 0:

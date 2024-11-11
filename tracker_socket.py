@@ -188,7 +188,7 @@ class TrackerSocket:
         self.send_data(data)
         s = time.time()
         while not self.queue.has(fid):
-            if math.floor((time.time() - s) * 1000) > 5000:
+            if math.floor((time.time() - s) * 1000) > 500:
                 self.connect_socket()
                 return None
         return self.queue.get(fid)
@@ -239,10 +239,8 @@ class TrackerSocket:
             if res is None:
                 logger.error("[Socket] No connection now")
             return True
-        except socket.error as e:
+        except socket.error:
             self.ser_connected = False
-            if self.debug:
-                logger.error("[Socket] Failed to send to client: {}".format(e))
             return False
 
     def get_command(self, data):

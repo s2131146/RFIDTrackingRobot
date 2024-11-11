@@ -1,7 +1,6 @@
 import re
 import subprocess
 import os
-import sys
 import threading
 import time
 from tkinter import TclError, font
@@ -10,10 +9,10 @@ import numpy as np
 from constants import Commands
 import tqueue
 import tkinter as tk
+import tracker
 from tkinter import ttk
 from tkinter import scrolledtext as st
 from PIL import Image, ImageTk, ImageGrab
-from tracker import Tracker
 
 DEF_MARGIN = 12
 STICKY_UP = "n"
@@ -36,7 +35,8 @@ class GUI:
     queue = tqueue.TQueue()
     timeline_index = 0
 
-    def __init__(self, _tracker: Tracker, root: tk.Tk):
+    def __init__(self, _tracker: tracker.Tracker, root: tk.Tk):
+        self.destroy = False
         self.tracker = _tracker
         self.root = root
         self.root.title("Metoki - RFID Tracking Robot")
@@ -51,7 +51,7 @@ class GUI:
         self.motor_right_var = tk.StringVar(value="0%")
 
         # モード選択用のStringVarを初期化
-        self.mode_var = tk.StringVar(value=Tracker.Mode.CAM_ONLY.name)
+        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.CAM_ONLY.name)
 
         # 自動スクロールの変数を初期化
         self.var_auto_scroll_received = tk.IntVar(value=1)
@@ -244,6 +244,24 @@ class GUI:
         self.enable_tracking_checkbox.grid(
             row=1, column=0, padx=0, pady=0, sticky=STICKY_LEFT
         )
+
+        self.var_enable_obstacles = tk.IntVar(value=tracker.DEBUG_DETECT_OBSTACLES)
+        self.enable_obstacles_checkbox = tk.Checkbutton(
+            self.bottom_frame,
+            text="Detect obstacles",
+            variable=self.var_enable_obstacles,
+        )
+        self.enable_obstacles_checkbox.grid(
+            row=1, column=1, padx=0, pady=0, sticky=STICKY_LEFT
+        )
+
+        self.var_slow = tk.IntVar(value=tracker.DEBUG_SLOW_MOTOR)
+        self.slow_checkbox = tk.Checkbutton(
+            self.bottom_frame,
+            text="Slow Mode",
+            variable=self.var_slow,
+        )
+        self.slow_checkbox.grid(row=1, column=2, padx=0, pady=0, sticky=STICKY_LEFT)
 
         self.label_wheel = tk.Label(self.bottom_frame)
         self.label_wheel.grid(row=0, column=1, padx=0, pady=0, sticky=STICKY_CENTER)
@@ -757,9 +775,7 @@ class GUI:
         self.command_entry.delete(0, tk.END)
 
     def update_stop(self, connected=True):
-        try:
-            self.root.winfo_exists()
-        except Exception:
+        if self.destroy:
             return
 
         if self.tracker.stop:
@@ -802,22 +818,21 @@ class GUI:
             self.tracker.stop_motor()
 
     def update_status(self, status):
-        try:
+        if not self.destroy:
             self.label_status.config(text=status)
-        except TclError:
-            pass
 
     def update_wheel(self):
-        if self.queue.has("g"):
+        if self.queue.has("g") and not self.destroy:
             self.label_wheel.config(text=self.queue.get("g"))
 
     def update_seg(self, seg):
-        try:
+        if not self.destroy:
             self.label_seg.config(text=seg)
-        except TclError:
-            pass
 
     def update_frame(self, frame, depth_frame):
+        if self.destroy:
+            return
+
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame)
         imgd = Image.fromarray(depth_frame)
@@ -835,12 +850,15 @@ class GUI:
         self.update_wheel()
 
     def update_commands(self, key, text_widget, label_widget):
-        if self.queue.has(key):
+        if self.queue.has(key) and not self.destroy:
             cmd = self.queue.get(key)
             self.insert_text(text_widget, cmd, key)
             label_widget.config(text=cmd)
 
     def insert_text(self, text_widget, cmd, key):
+        if self.destroy:
+            return
+
         if not text_widget.get("1.0", tk.END).strip():
             text_widget.insert(tk.END, "{}: {}".format(self.timeline_index, cmd))
         else:
@@ -862,6 +880,9 @@ class GUI:
         Args:
             counts (dict): 各アンテナの検出回数
         """
+        if self.destroy:
+            return
+
         # アンテナの順序に基づいて更新
         antenna_order = ["CENTER", "LEFT", "RIGHT", "REAR"]
         for i, antenna in enumerate(antenna_order):
@@ -878,10 +899,7 @@ class GUI:
                 green_intensity = min(255, int((count / max_count) * 255))
                 color = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
 
-            try:
-                canvas.itemconfig(rect_id, fill=color)
-            except TclError:
-                pass
+            canvas.itemconfig(rect_id, fill=color)
 
     def update_motor_values(self, left_value, right_value):
         """モーターの速度を更新します。
@@ -890,6 +908,9 @@ class GUI:
             left_value (str): 左モーターの速度
             right_value (str): 右モーターの速度
         """
+        if self.destroy:
+            return
+
         l_str = str(left_value) + "%"
         r_str = str(right_value) + "%"
         self.motor_left_var.set(l_str)
@@ -918,4 +939,5 @@ class GUI:
             pass
 
     def __del__(self):
+        self.destroy = True
         self.tracker.close()

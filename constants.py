@@ -3,12 +3,20 @@ from typing import ClassVar, Set
 
 
 @dataclass(frozen=True)
+class Position:
+    LEFT: ClassVar[str] = "L"
+    RIGHT: ClassVar[str] = "R"
+    CENTER: ClassVar[str] = "C"
+    NONE: ClassVar[str] = "X"
+
+
+@dataclass(frozen=True)
 class Commands:
     STOP: ClassVar[str] = "STOP"
     START: ClassVar[str] = "START"
-    GO_LEFT: ClassVar[str] = "L"
-    GO_RIGHT: ClassVar[str] = "R"
-    GO_CENTER: ClassVar[str] = "C"
+    GO_LEFT: ClassVar[str] = Position.LEFT
+    GO_RIGHT: ClassVar[str] = Position.RIGHT
+    GO_CENTER: ClassVar[str] = Position.CENTER
     GO_BACK: ClassVar[str] = "B"
     CHECK: ClassVar[str] = "YO"
     STOP_TEMP: ClassVar[str] = "STMP"

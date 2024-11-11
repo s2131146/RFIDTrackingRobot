@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import time
 from typing import ClassVar, Counter, Optional, Tuple
 import cv2
@@ -107,23 +108,6 @@ class Obstacles:
         target_x: int,
         target_bbox=None,
     ) -> Tuple[str, bool, Optional[np.ndarray], str, bool, bool]:
-        """
-        深度画像を処理して、障害物の位置、壁の位置、回避すべきかを判断します。
-
-        引数:
-            depth_image (np.ndarray): 深度画像（2次元配列）。
-            target_x (int): ターゲットのx座標（ピクセル単位）。
-            target_bbox (Optional): ターゲットのバウンディングボックス情報。
-
-        戻り値:
-            Tuple[str, bool, Optional[np.ndarray], str, bool]:
-                - 障害物の位置（LEFT, RIGHT, CENTER, NONE, FULL）。
-                - 障害物が存在するかのフラグ（True/False）。
-                - 障害物の可視化画像（np.ndarray）。
-                - 壁の位置（LEFT, RIGHT, CENTER, NONE）。
-                - 壁を回避すべきかのフラグ（True/False）。
-        """
-        # 深度画像が存在しない場合、警告を出してデフォルト値を返す
         if depth_image is None:
             self.logger.warning("Depth image is None.")
             return self.OBS_POS_NONE, False, None, (100, 100), False
@@ -137,7 +121,6 @@ class Obstacles:
 
         # ターゲットのx座標をフレームの中央に合わせる
         target_x = target_x + (self.frame_width // 2)
-        # 深度画像の左右の余白を除去
         depth_image = depth_image[:, 25:]
 
         # 障害物が目の前にあるかを判断
@@ -149,7 +132,6 @@ class Obstacles:
 
         # 壁を検出
         wall_mask = self.detect_walls(depth_image, floor_mask)
-        wall_mask = self._remove_wall_noise(wall_mask, min_continuous_pixels=20)
         wall_position = self.determine_wall_position(depth_image, wall_mask)
         wall_parallel = True if wall_position[1] == self.OBS_POS_PARALLEL else False
         wall_position = wall_position[0]
@@ -158,8 +140,6 @@ class Obstacles:
         # 中央領域に壁が存在するかをチェック
         central_area = wall_mask[:, self.central_start : self.central_end]
         wall_in_center = np.any(central_area)
-
-        # 壁の位置と回避情報を履歴に追加
         self.wall_positions_history.append(wall_position)
         self.avoid_walls_history.append(wall_in_center)
 
@@ -168,66 +148,27 @@ class Obstacles:
         central_mask = np.ones_like(central_region, dtype=bool)
         central_mask[floor_mask[:, self.central_start : self.central_end]] = False
 
-        # メディアンフィルタでノイズを除去
-        depth_filtered = cv2.medianBlur(central_region.astype(np.uint16), 5).astype(
-            np.float32
-        )
-
-        # 障害物マスクを初期化
-        obstacle_mask = np.zeros_like(depth_filtered, dtype=bool)
-
-        # 小さな障害物を除去
-        obstacle_mask_cleaned = self.remove_small_obstacles(obstacle_mask)
-
-        # 膨張処理で隙間を埋める
-        kernel = np.ones((5, 5), np.uint8)
-        obstacle_mask_dilated = cv2.dilate(
-            obstacle_mask_cleaned.astype(np.uint8), kernel, iterations=1
-        ).astype(bool)
-
-        # 元の画像サイズに戻して矩形フィット
-        full_mask = np.zeros_like(depth_image, dtype=bool)
-        full_mask[:, self.central_start : self.central_end] = obstacle_mask_dilated
-        obstacle_mask_rect = self.fit_rectangle(full_mask)
-
-        # 障害物の左右判定
-        direction = self.determine_obstacle_position(obstacle_mask_rect)
-
-        # 検出された方向を履歴に追加
-        self.directions_history.append(direction)
-
         # 0.5秒間隔で結果を更新
         current_time = time.time()
-        most_common_direction = self.last_direction
         most_common_wall_position = self.last_wall_position
         most_common_avoid_wall = self.last_wall_avoid
         most_common_wall_parallel = self.last_wall_parallel
         if current_time - self.last_detection_time >= self.detection_interval:
-            # 最も頻出する障害物の方向を取得
-            most_common_direction = Counter(self.directions_history).most_common(1)[0][
-                0
-            ]
-            self.last_direction = most_common_direction
-
-            # 最も頻出する壁の位置を取得
             most_common_wall_position = Counter(
                 self.wall_positions_history
             ).most_common(1)[0][0]
             self.last_wall_position = most_common_wall_position
 
-            # 壁を回避すべきかどうかを判断
             most_common_avoid_wall = Counter(self.avoid_walls_history).most_common(1)[
                 0
             ][0]
             self.last_wall_avoid = most_common_avoid_wall
 
-            # 壁の並行状態の最頻値を取得
             most_common_wall_parallel = Counter(self.wall_parallel_history).most_common(
                 1
             )[0][0]
             self.last_wall_parallel = most_common_wall_parallel
 
-            # 履歴をリセットして次の集計に備える
             self.directions_history.clear()
             self.wall_positions_history.clear()
             self.avoid_walls_history.clear()
@@ -237,7 +178,6 @@ class Obstacles:
         # 障害物と床を可視化（障害物は赤色、床は青色で塗りつぶし）
         obstacle_visual = self.visualize_obstacle(
             depth_image,
-            obstacle_mask_rect,
             floor_mask,
             wall_mask,
             target_x,
@@ -245,26 +185,19 @@ class Obstacles:
             ignore_x_end,
         )
 
-        # 目の前に全面的な障害物がある場合、FULLを返す
         if overall_direction:
             return self.OBS_POS_FULL, obstacle_visual
 
-        # ターゲットが中央20%の領域内にある場合、障害物判定をスキップ
         if target_bbox:
             if ignore_x_start < self.central_end and ignore_x_end > self.central_start:
                 return (
-                    self.OBS_POS_NONE,
-                    False,
                     obstacle_visual,
                     most_common_wall_position,
                     most_common_avoid_wall,
                     most_common_wall_parallel,
                 )
 
-        # 最終的な結果を返す
         return (
-            most_common_direction,
-            most_common_direction != self.OBS_POS_NONE,
             obstacle_visual,
             most_common_wall_position,
             most_common_avoid_wall,
@@ -291,36 +224,6 @@ class Obstacles:
             return True
 
         return False
-
-    def _remove_wall_noise(
-        self, wall_mask: np.ndarray, min_continuous_pixels: int = 10
-    ) -> np.ndarray:
-        """
-        壁マスクのノイズを除去し、ある程度連続した壁のみを残します。
-
-        引数:
-            wall_mask (np.ndarray): 壁と判断された部分のマスク。
-            min_continuous_pixels (int): 壁と判断するための最小連続ピクセル数。デフォルトは10。
-
-        戻り値:
-            np.ndarray: ノイズ除去後の壁マスク。
-        """
-        # 水平方向の連続ピクセル数をカウントしてノイズを除去
-        cleaned_mask = np.zeros_like(wall_mask, dtype=bool)
-        for row in range(wall_mask.shape[0]):
-            continuous_count = 0
-            for col in range(wall_mask.shape[1]):
-                if wall_mask[row, col]:
-                    continuous_count += 1
-                else:
-                    if continuous_count >= min_continuous_pixels:
-                        cleaned_mask[row, col - continuous_count : col] = True
-                    continuous_count = 0
-            # 最後の連続領域がノイズ除去条件を満たす場合
-            if continuous_count >= min_continuous_pixels:
-                cleaned_mask[row, wall_mask.shape[1] - continuous_count :] = True
-
-        return cleaned_mask
 
     def determine_wall_position(
         self, depth_image: np.ndarray, wall_mask: np.ndarray
@@ -366,16 +269,21 @@ class Obstacles:
             Optional[Tuple[str, Optional[str]]]: 壁の位置（LEFT, RIGHT, CENTER, NONE）または None。
         """
         central_area = wall_mask[:, self.central_start : self.central_end]
-        left_count = np.sum(central_area[:, : central_area.shape[1] // 2])
-        right_count = np.sum(central_area[:, central_area.shape[1] // 2 :])
 
         if np.any(central_area):
-            if left_count > right_count:
+            left_area = wall_mask[:, : self.central_start]
+            right_area = wall_mask[:, self.central_end :]
+
+            left_coverage = np.sum(left_area) / left_area.size
+            right_coverage = np.sum(right_area) / right_area.size
+
+            if left_coverage > right_coverage:
                 return self.OBS_POS_LEFT, None
-            elif right_count > left_count:
+            elif left_coverage < right_coverage:
                 return self.OBS_POS_RIGHT, None
             else:
                 return self.OBS_POS_CENTER, None
+
         return None
 
     def _check_coverage_based_position(
@@ -573,27 +481,32 @@ class Obstacles:
         wall_mask = np.zeros_like(depth_image, dtype=bool)
         _, width = depth_image.shape
 
-        # 左側の壁検出を実行
-        self._detect_wall_side(
-            depth_image=depth_image,
-            floor_mask=floor_mask,
-            wall_mask=wall_mask,
-            start_col=0,
-            end_col=width // 2,
-            step=1,
-            side="left",
-        )
+        # 並列実行用のスレッドプールを作成
+        with ThreadPoolExecutor() as executor:
+            # 左側の壁検出と右側の壁検出を並列に実行
+            future_left = executor.submit(
+                self._detect_wall_side,
+                depth_image=depth_image,
+                floor_mask=floor_mask,
+                wall_mask=wall_mask,
+                start_col=0,
+                end_col=width // 2,
+                step=1,
+            )
 
-        # 右側の壁検出を実行
-        self._detect_wall_side(
-            depth_image=depth_image,
-            floor_mask=floor_mask,
-            wall_mask=wall_mask,
-            start_col=width - 1,
-            end_col=width // 2 - 1,
-            step=-1,
-            side="right",
-        )
+            future_right = executor.submit(
+                self._detect_wall_side,
+                depth_image=depth_image,
+                floor_mask=floor_mask,
+                wall_mask=wall_mask,
+                start_col=width - 1,
+                end_col=width // 2 - 1,
+                step=-1,
+            )
+
+            # 両方の検出が完了するまで待機
+            future_left.result()
+            future_right.result()
 
         # 膨張処理と連結成分を使って矩形にフィット
         wall_mask_rect = self._dilate_and_fit_rectangle(wall_mask)
@@ -601,7 +514,7 @@ class Obstacles:
         return wall_mask_rect
 
     def _detect_wall_side(
-        self, depth_image, floor_mask, wall_mask, start_col, end_col, step, side
+        self, depth_image, floor_mask, wall_mask, start_col, end_col, step
     ):
         """
         特定の方向（左または右）での壁検出処理を行います。
@@ -633,11 +546,10 @@ class Obstacles:
             if len(depth_values) < self.min_continuous_increase:
                 continue
 
-            avg_depth = np.mean(depth_values)
             # 深度の勾配を計算して急激な変化があれば壁と判断
             gradient = np.abs(np.diff(depth_values))
             valid_gradients = gradient[gradient < 0xEA60]
-            if avg_depth < depth_threshold and np.any(
+            if np.mean(depth_values) < depth_threshold and np.any(
                 valid_gradients > gradient_threshold
             ):
                 wall_mask[:, col] = True
@@ -731,7 +643,6 @@ class Obstacles:
     def visualize_obstacle(
         self,
         depth_image: np.ndarray,
-        obstacle_mask: np.ndarray,
         floor_mask: np.ndarray,
         wall_mask: np.ndarray,
         target_x: int,
@@ -851,49 +762,3 @@ class Obstacles:
         )
 
         return resized_visualization
-
-    def determine_obstacle_position(self, obstacle_mask: np.ndarray) -> str:
-        """
-        中央20%のエリアをさらに左右に分割し、障害物の位置を判定します。
-        横方向に65%以上の障害物があればCENTERとし、
-        または両端に障害物が触れている場合もCENTERとします。
-
-        引数:
-            obstacle_mask (np.ndarray): 障害物マスク。
-
-        戻り値:
-            str: 障害物の位置（LEFT, RIGHT, CENTER, NONE）。
-        """
-        # 中央20%のエリアを取得
-        central_area = obstacle_mask[:, self.central_start : self.central_end]
-
-        # 境界部分を取得
-        left_boundary = central_area[:, 0]  # 左端
-        right_boundary = central_area[:, -1]  # 右端
-
-        # 境界部分に障害物があるか判定
-        left_boundary_exists = np.any(left_boundary)
-        right_boundary_exists = np.any(right_boundary)
-
-        # 横方向に障害物が存在する割合を計算
-        horizontal_coverage = (
-            np.sum(np.any(central_area, axis=0)) / central_area.shape[1]
-        )
-
-        # 横方向65%以上が障害物で埋まっている、または両端に障害物がある場合はCENTERと判定
-        if horizontal_coverage >= 0.65 or (
-            left_boundary_exists and right_boundary_exists
-        ):
-            return self.OBS_POS_CENTER
-
-        # 左右に分割して障害物の存在を判定
-        left_exists = np.any(central_area[:, : central_area.shape[1] // 2])
-        right_exists = np.any(central_area[:, central_area.shape[1] // 2 :])
-
-        # 左右の存在状況に基づいて結果を返す
-        if right_exists:
-            return self.OBS_POS_RIGHT
-        elif left_exists:
-            return self.OBS_POS_LEFT
-        else:
-            return self.OBS_POS_NONE

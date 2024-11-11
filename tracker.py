@@ -17,7 +17,7 @@ import numpy as np
 import asyncio
 from enum import Enum
 
-from constants import Commands
+from constants import Commands, Position
 from rfid import RFIDReader
 import tracker_socket as ts
 import gui
@@ -45,6 +45,7 @@ DEBUG_SLOW_MOTOR = False
 DEBUG_SERIAL = True
 DEBUG_USE_ONLY_WEBCAM = False
 DEBUG_DETECT_OBSTACLES = True
+DEBUG_INVERT_MOTOR = False
 
 # Cascade 関連のフラグとリストを削除
 
@@ -70,7 +71,6 @@ class Tracker:
         self.rfid_accessing = False
         self.rfid_reader = None
         self.lost_target_command = Commands.STOP_TEMP
-        self.stop_exec_cmd = False
         self.stop_exec_cmd_gui = False
 
         self.default_speed = 250
@@ -124,13 +124,6 @@ class Tracker:
         self.occupancy_ratio = 0
         self.is_close = False
 
-        self.target_position_str = "X"
-        self.target_x = -1
-        self.obs_pos = Obstacles.OBS_POS_NONE
-        self.wall = None
-        self.avoid_wall = False
-        self.wall_parallel = False
-
         self.last_target_direction = (
             None  # ターゲットが最後にいた方向 ('LEFT' または 'RIGHT')
         )
@@ -152,6 +145,15 @@ class Tracker:
 
         self.initialized = False
         self.first_disable_tracking = True
+
+        self.init_detection_flags()
+        self.init_obstacles_vals()
+
+    def init_obstacles_vals(self):
+        self.obs_pos = Obstacles.OBS_POS_NONE
+        self.wall = None
+        self.avoid_wall = False
+        self.wall_parallel = False
 
     def update_mode(self):
         self.init()
@@ -349,14 +351,17 @@ class Tracker:
         Returns:
             Tuple[int, int]: 左右のモーターの出力（百分率）
         """
-        if wall_direction == Obstacles.OBS_POS_LEFT and self.motor_power_l > 50:
+        low_power = 20
+        if wall_direction == Obstacles.OBS_POS_LEFT and self.motor_power_l > low_power:
             # 壁が左側にある場合、右に寄って進む
-            self.motor_power_l = 50
-            self.motor_power_r = 100
-        elif wall_direction == Obstacles.OBS_POS_RIGHT and self.motor_power_r > 50:
+            self.motor_power_r = low_power if not DEBUG_INVERT_MOTOR else 100
+            self.motor_power_l = 100 if not DEBUG_INVERT_MOTOR else low_power
+        elif (
+            wall_direction == Obstacles.OBS_POS_RIGHT and self.motor_power_r > low_power
+        ):
             # 壁が右側にある場合、左に寄って進む
-            self.motor_power_l = 100
-            self.motor_power_r = 50
+            self.motor_power_r = 100 if not DEBUG_INVERT_MOTOR else low_power
+            self.motor_power_l = low_power if not DEBUG_INVERT_MOTOR else 100
 
     def calculate_motor_power(self, target_x=0):
         """モーター出力を計算
@@ -446,23 +451,28 @@ class Tracker:
         if normalized_error < 0:
             # 左に曲がる場合
             self.motor_power_l = max(
-                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
             )
             self.motor_power_r = max(
-                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
             )
         elif normalized_error > 0:
             # 右に曲がる場合
             self.motor_power_r = max(
-                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
             )
             self.motor_power_l = max(
-                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
             )
         else:
             # 中央の場合
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
+
+        if DEBUG_INVERT_MOTOR:
+            temp = self.motor_power_l
+            self.motor_power_l = self.motor_power_r
+            self.motor_power_r = temp
 
     def get_target_pos_str(self, target_center_x):
         return self.target_processor.get_target_pos_str(target_center_x)
@@ -488,7 +498,7 @@ class Tracker:
                 continue
             self.update_seg()
             frame_start_time = time.time()
-            self.reset_detection_flags()
+            self.init_detection_flags()
             self.capture_frame()
             if self.gui.var_enable_tracking.get():
                 self.first_disable_tracking = True
@@ -549,9 +559,8 @@ class Tracker:
             self.seg = 0
         self.gui.update_seg(self.seg)
 
-    def reset_detection_flags(self):
-        self.target_detected = False
-        self.target_position_str = "X"
+    def init_detection_flags(self):
+        self.target_position_str = Position.NONE
         self.stop_exec_cmd = False
         self.target_x = -1
         self.obs_detected = False
@@ -590,7 +599,10 @@ class Tracker:
         self._process_rfid_logic(detected_targets)
 
         # 障害物処理
-        self._process_obstacles(detected_targets)
+        if not DEBUG_USE_ONLY_WEBCAM and self.gui.var_enable_obstacles.get():
+            self._process_obstacles(detected_targets)
+        else:
+            self.init_obstacles_vals()
 
         # モーター制御
         self._control_motor_for_target()
@@ -688,44 +700,41 @@ class Tracker:
 
     def _process_obstacles(self, detected_targets):
         """障害物処理を行う"""
-        if not DEBUG_USE_ONLY_WEBCAM and DEBUG_DETECT_OBSTACLES:
-            result = self.obstacles.process_obstacles(
-                self.serial.depth_image, self.target_x, detected_targets
-            )
-            if len(result) == 2:
-                if not self.auto_stop_obs:
-                    self.stop_motor()
-                    self.auto_stop_obs = True
-                _, self.depth_frame = result
-                return
-            else:
-                if self.auto_stop_obs:
-                    self.auto_stop_obs = False
-                    self.start_motor()
-
+        result = self.obstacles.process_obstacles(
+            self.serial.depth_image, self.target_x, detected_targets
+        )
+        if len(result) == 2:
+            if not self.auto_stop_obs:
+                self.stop_motor()
+                self.auto_stop_obs = True
+            _, self.depth_frame = result
+            return
+        else:
+            if self.auto_stop_obs:
                 self.auto_stop_obs = False
-                (
-                    self.obs_pos,
-                    self.obs_detected,
-                    self.depth_frame,
-                    wall,
-                    self.avoid_wall,
-                    self.wall_parallel,
-                ) = result
+                self.start_motor()
 
-            # 壁位置の設定
-            self._update_wall_position(wall)
+            self.auto_stop_obs = False
+            (
+                self.depth_frame,
+                wall,
+                self.avoid_wall,
+                self.wall_parallel,
+            ) = result
+
+        # 壁位置の設定
+        self._update_wall_position(wall)
 
     def _update_wall_position(self, wall):
         """壁の位置に基づいて状態を更新"""
         if wall == Obstacles.OBS_POS_CENTER:
             self.wall = "BOTH"
         elif wall == Obstacles.OBS_POS_LEFT:
-            self.wall = "LEFT"
+            self.wall = Position.LEFT
         elif wall == Obstacles.OBS_POS_RIGHT:
-            self.wall = "RIGHT"
+            self.wall = Position.RIGHT
         else:
-            self.wall = "NONE"
+            self.wall = Position.NONE
 
     def _control_motor_for_target(self):
         """ターゲット位置に基づいてモーターを制御"""
@@ -737,7 +746,7 @@ class Tracker:
             self.apply_motor_wall(self.wall)
 
         # 平行に進む
-        if self.wall_parallel:
+        if self.wall_parallel and self.wall == self.target_position_str:
             base_speed = self._calculate_base_speed()
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
@@ -751,7 +760,7 @@ class Tracker:
 
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
-        if DEBUG_SLOW_MOTOR:
+        if DEBUG_SLOW_MOTOR or self.gui.var_slow.get():
             self.default_speed = 150
         if self._def_spd_bk != self.default_speed:
             self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
