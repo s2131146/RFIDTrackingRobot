@@ -7,6 +7,7 @@ from tkinter import TclError, font
 import cv2
 import numpy as np
 from constants import Commands
+import rfid
 import tqueue
 import tkinter as tk
 import tracker
@@ -143,7 +144,7 @@ class GUI:
         self.progress_win.geometry("300x100")
         tk.Label(
             self.progress_win,
-            text="Saving video...\nPlease wait...",
+            text="Saving video.\nPlease wait...",
         ).pack(pady=10)
 
         progress_bar = ttk.Progressbar(
@@ -237,7 +238,7 @@ class GUI:
         self.bottom_frame.grid_columnconfigure(1, weight=1)
         self.bottom_frame.grid_columnconfigure(2, weight=1)
 
-        self.var_enable_tracking = tk.IntVar(value=1)
+        self.var_enable_tracking = tk.IntVar(value=tracker.DEBUG_ENABLE_TRACKING)
         self.enable_tracking_checkbox = tk.Checkbutton(
             self.bottom_frame, text="Enable tracking", variable=self.var_enable_tracking
         )
@@ -275,7 +276,7 @@ class GUI:
         self.rfid_text_ids = []
         self.rfid_rect_ids = []  # 四角形のIDを保存するリスト
 
-        rfid_labels = ["CENTER", "LEFT", "RIGHT", "REAR"]
+        rfid_labels = rfid.ANTENNA_NAMES
 
         for i in range(4):
             canvas = tk.Canvas(
@@ -884,8 +885,7 @@ class GUI:
             return
 
         # アンテナの順序に基づいて更新
-        antenna_order = ["CENTER", "LEFT", "RIGHT", "REAR"]
-        for i, antenna in enumerate(antenna_order):
+        for i, antenna in enumerate(rfid.ANTENNA_NAMES):
             count = counts.get(i + 1, 0)
             self.rfid_values[i].set(str(count))
             canvas = self.rfid_canvases[i]

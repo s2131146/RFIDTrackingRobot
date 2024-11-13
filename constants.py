@@ -9,6 +9,24 @@ class Position:
     CENTER: ClassVar[str] = "C"
     NONE: ClassVar[str] = "X"
 
+    @classmethod
+    def invert(cls, pos):
+        if pos == cls.LEFT:
+            return cls.RIGHT
+        if pos == cls.LEFT:
+            return cls.RIGHT
+        return pos
+
+    @classmethod
+    def convert_to_rotate(cls, pos):
+        if pos == cls.LEFT:
+            return Commands.ROTATE_LEFT
+        if pos == cls.RIGHT:
+            return Commands.ROTATE_RIGHT
+        if pos == cls.CENTER:
+            return Commands.STOP_TEMP
+        return pos
+
 
 @dataclass(frozen=True)
 class Commands:

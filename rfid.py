@@ -1,3 +1,4 @@
+from enum import Enum
 import threading
 import serial
 import time
@@ -5,13 +6,23 @@ import re
 import logger
 from constants import Commands
 
+
+class RFIDAntenna(Enum):
+    CENTER = 1
+    RIGHT = 2
+    LEFT = 3
+    REAR = 4
+
+
 RFID_CARD = "Q3000E280699500006003A248807119C3"
 RFID_ACTIVE = "Q3000E28068940000501AC621013A59D0"
 
+# アンテナIDと名前のマッピングをクラス属性として定義
+ANTENNA_MAPS = {antenna.value: antenna.name for antenna in RFIDAntenna}
+ANTENNA_NAMES = [ANTENNA_MAPS.get(i, "") for i in ANTENNA_MAPS]
+
 
 class RFIDReader:
-    # アンテナIDと名前のマッピングをクラス属性として定義
-    ANTENNA_NAMES = {1: "CENTER", 2: "LEFT", 3: "RIGHT", 4: "REAR"}
 
     def __init__(self, port="COM4", baudrate=38400, antenna=1):
         self.port = port
@@ -64,7 +75,7 @@ class RFIDReader:
                 else:
                     full_command = command
                 self.ser.write(full_command.encode())
-                time.sleep(0.05)  # 0.016秒のスリープ
+                time.sleep(0.05)  # 最小0.016秒、ただし正常に取れない可能性あり
                 response = self.ser.read_all().decode(errors="ignore")
                 response = re.sub(r"[\n\t\r]", "", response)
                 return response
@@ -118,7 +129,7 @@ class RFIDReader:
         non_zero_counts = [cnt for cnt in counts.values() if cnt > 0]
         if len(non_zero_counts) == 1:
             antenna = next(ant for ant, cnt in counts.items() if cnt > 0)
-            direction = self.ANTENNA_NAMES[antenna]
+            direction = ANTENNA_MAPS[antenna]
             return self.direction_to_command(direction)
 
         # 3. CENTER、REARとLEFT、RIGHTの検出回数が同じ場合
@@ -146,7 +157,7 @@ class RFIDReader:
         # 7. 最も検出回数が多い方向へ移動。ただし、各方向が3回以上の場合は前へ
         if max_count > 0 and total_ge1 == 0:
             antenna = antennas_with_max[0]
-            direction = self.ANTENNA_NAMES[antenna]
+            direction = ANTENNA_MAPS[antenna]
             return self.direction_to_command(direction)
 
         return Commands.STOP_TEMP
@@ -176,9 +187,13 @@ class RFIDReader:
             while self.running:
                 # 1. CENTER、LEFT、RIGHTアンテナでEPC読み取り
                 for antenna_id in [1, 2, 3]:
-                    self.switch_antenna(antenna_id)
-                    for _ in range(5):
-                        self.read_epc()
+                    if (
+                        antenna_id > 1
+                        and self.get_detection_counts()[RFIDAntenna.CENTER.value] <= 1
+                    ) or antenna_id == 1:
+                        self.switch_antenna(antenna_id)
+                        for _ in range(5):
+                            self.read_epc()
 
                 # 2. 他のアンテナで一度も検出されなかった場合にのみREARアンテナを読み取る
                 with self.lock:
@@ -235,7 +250,7 @@ class RFIDReader:
                     # アンテナ名と検出回数を文字列に変換
                     counts_str = ", ".join(
                         [
-                            f"{self.ANTENNA_NAMES[ant]}={cnt}"
+                            f"{ANTENNA_MAPS[ant]}={cnt}"
                             for ant, cnt in counts_copy.items()
                         ]
                     )
