@@ -34,6 +34,7 @@ class TargetProcessor:
     """対象検出クラス: 人物の検出と距離に基づく速度調整を行う"""
 
     model: YOLO
+    detected_targets: List[Target]
 
     from tracker import Tracker
 
@@ -50,11 +51,38 @@ class TargetProcessor:
 
         self.last_target_features = None  # 直前のターゲットの特徴を保存
         self.current_target = None  # 現在追跡中のターゲット
-        self.color_tolerance = 50  # 色の一致許容範囲（ユークリッド距離）
+        self.color_tolerance = 20  # 色の一致許容範囲（ユークリッド距離）
 
         # 前回のターゲットの中心座標を保持
         self.last_target_center_x = None
         self.last_target_center_y = None
+
+        self.target_clothing_color = None
+
+    def reset_target(self):
+        """保持している色と異なる、最もカメラに近いターゲットを新たな対象に選び、保持色をリセットします。"""
+        if self.target_clothing_color is not None:
+            # 保持している色と異なるターゲットをフィルタリング
+            different_color_targets = [
+                t
+                for t in self.detected_targets
+                if self.color_distance(t.clothing_color_rgb, self.target_clothing_color)
+                > self.color_tolerance
+            ]
+
+            # フィルタリング結果が存在する場合、最もカメラに近い（面積が最大の）ターゲットを選択
+            if different_color_targets:
+                new_target = self.select_closest_target(different_color_targets)
+                self.current_target = new_target
+                self.target_clothing_color = new_target.clothing_color_rgb
+            else:
+                # 異なる色のターゲットがいない場合、現在のターゲットをリセット
+                self.current_target = None
+                self.target_clothing_color = None
+        else:
+            # 色が保持されていない場合、何もしない
+            self.current_target = None
+            self.target_clothing_color = None
 
     def update_speed_based_on_distance(self):
         """対象の占有率に基づいてself.default_speedを滑らかに更新"""
@@ -121,28 +149,58 @@ class TargetProcessor:
         """検出されたターゲットから追跡すべきターゲットを選択します。
 
         優先度:
-            最も近いターゲット（バウンディングボックスのサイズが大きい）を選択
+            最初は最も近いターゲット（バウンディングボックスのサイズが大きい）を選択
+            以降はターゲットの色に基づいて最も一致するターゲットを選択
 
         Args:
             detected_targets (List[Target]): 検出されたターゲットのリスト
 
         Returns:
-            Target: 選択されたターゲット
+            Optional[Target]: 選択されたターゲット
         """
         if not detected_targets:
             self.logger.info("No targets detected.")
             self.current_target = None
             return None
 
-        # ターゲットが1つ以上検出されている場合、最も大きな面積のターゲットを選択
-        selected_target = self.select_closest_target(detected_targets)
+        self.detected_targets = detected_targets
 
-        # 選択されたターゲットの情報を更新
-        self.current_target = selected_target
-        self.last_target_center_x = selected_target.center_x
-        self.last_target_center_y = (selected_target.y1 + selected_target.y2) // 2
+        # 最初の対象がまだ選ばれていない場合、最も近いターゲットを選択し、その色を記録
+        if not self.target_clothing_color:
+            selected_target = self.select_closest_target(detected_targets)
+            self.target_clothing_color = selected_target.clothing_color_rgb
+        else:
+            # 既存の色に最も近いターゲットを選択
+            selected_target = self.select_target_by_color(
+                detected_targets, self.target_clothing_color
+            )
 
-        return selected_target
+        # 色に基づいて選択されたターゲットがいない場合、対象をなしに設定
+        if selected_target:
+            self.current_target = selected_target
+        else:
+            self.current_target = None
+
+        return self.current_target
+
+    def select_target_by_color(
+        self, targets: List[Target], target_color: Tuple[int, int, int]
+    ) -> Optional[Target]:
+        """指定された色に最も近いターゲットを選択します。"""
+        # 色が一致するターゲットをフィルタリング
+        matching_targets = [
+            t
+            for t in targets
+            if self.color_distance(t.clothing_color_rgb, target_color)
+            <= self.color_tolerance
+        ]
+
+        # 一致するターゲットがある場合、最も近いターゲットを選択
+        if matching_targets:
+            return self.select_closest_target(matching_targets)
+
+        # 一致するターゲットがない場合、対象をなしに設定
+        return None
 
     def select_closest_target(self, targets: List[Target]) -> Target:
         """最も近いターゲットを選択します。"""

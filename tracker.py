@@ -667,17 +667,11 @@ class Tracker:
         selected_target = None
 
         if not self.RFID_ONLY_MODE:
-            if len(detected_targets) > 1:
-                # 複数ターゲットの選択処理
+            if len(detected_targets) > 0:
                 selected_target = self._select_and_process_multiple_targets(
                     detected_targets
                 )
-            elif len(detected_targets) == 1:
-                # 単一ターゲットの処理
-                selected_target = self._process_single_target(
-                    detected_targets, current_time
-                )
-            elif len(detected_targets) == 0:
+            else:
                 # ターゲットなしの場合の処理
                 self._handle_no_targets(current_time)
 
@@ -785,7 +779,7 @@ class Tracker:
 
         # 壁位置の設定
         reset_to_backup = self._update_wall_position(wall)
-        if reset_to_backup:
+        if reset_to_backup and bk_wall != self.target_position_str:
             self.wall = bk_wall
             self.wall_parallel = Obstacles.OBS_PARALLEL_FULL
 

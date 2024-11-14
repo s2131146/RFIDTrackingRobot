@@ -426,7 +426,30 @@ class GUI:
     def create_control_panel(self):
         self.control_panel_frame = tk.Frame(self.control_frame)
         self.control_panel_frame.grid(
-            row=6, column=1, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_UP
+            row=0,
+            column=1,
+            rowspan=6,
+            padx=DEF_MARGIN,
+            pady=DEF_MARGIN,
+            sticky=STICKY_UP,
+        )
+
+        # RESETボタンを矢印操作ボタンの上に配置
+        self.reset_button = tk.Button(
+            self.control_panel_frame,
+            text="Change Target",
+            font=self.bold_font,
+            bg="gray",
+            fg="white",
+            borderwidth=4,  # ボタンの境界線幅を増加
+            relief="solid",  # 境界線を実線に設定
+            highlightbackground="black",  # ハイライト背景色を黒に設定
+            highlightcolor="black",  # ハイライト色を黒に設定
+            highlightthickness=2,  # ハイライトの厚さを設定
+            command=self.reset_button_clicked,
+        )
+        self.reset_button.grid(
+            row=0, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
         )
 
         # グリッドを設定して十字型にボタンを配置
@@ -437,6 +460,9 @@ class GUI:
         arrow_font = font.Font(family="Consolas", size=12, weight="bold")
         button_height = 2
         button_width = 6
+
+        button_row_top = 1
+        button_row_bottom = 2
 
         # 左回転ボタン
         self.button_rotate_left = tk.Button(
@@ -454,7 +480,7 @@ class GUI:
             highlightthickness=2,  # ハイライトの厚さを設定
             command=None,  # イベントで制御
         )
-        self.button_rotate_left.grid(row=0, column=0, padx=5, pady=5)
+        self.button_rotate_left.grid(row=button_row_top, column=0, padx=5, pady=5)
 
         # 右回転ボタン
         self.button_rotate_right = tk.Button(
@@ -472,7 +498,7 @@ class GUI:
             highlightthickness=2,  # ハイライトの厚さを設定
             command=None,  # イベントで制御
         )
-        self.button_rotate_right.grid(row=0, column=2, padx=5, pady=5)
+        self.button_rotate_right.grid(row=button_row_top, column=2, padx=5, pady=5)
 
         # 上ボタン
         self.button_up = tk.Button(
@@ -490,7 +516,7 @@ class GUI:
             highlightthickness=2,  # ハイライトの厚さを設定
             command=None,  # イベントで制御
         )
-        self.button_up.grid(row=0, column=1, padx=5, pady=5)
+        self.button_up.grid(row=button_row_top, column=1, padx=5, pady=5)
 
         # 下ボタン
         self.button_down = tk.Button(
@@ -508,7 +534,7 @@ class GUI:
             highlightthickness=2,
             command=None,
         )
-        self.button_down.grid(row=1, column=1, padx=5, pady=5)
+        self.button_down.grid(row=button_row_bottom, column=1, padx=5, pady=5)
 
         # 左ボタン
         self.button_left = tk.Button(
@@ -526,7 +552,7 @@ class GUI:
             highlightthickness=2,
             command=None,
         )
-        self.button_left.grid(row=1, column=0, padx=5, pady=5)
+        self.button_left.grid(row=button_row_bottom, column=0, padx=5, pady=5)
 
         # 右ボタン
         self.button_right = tk.Button(
@@ -544,7 +570,7 @@ class GUI:
             highlightthickness=2,
             command=None,
         )
-        self.button_right.grid(row=1, column=2, padx=5, pady=5)
+        self.button_right.grid(row=button_row_bottom, column=2, padx=5, pady=5)
 
         # ボタン押下時のイベントをバインド
         self.button_up.bind("<ButtonPress-1>", lambda e: self.start_moving(CONTROL_UP))
@@ -874,6 +900,11 @@ class GUI:
             and self.var_auto_scroll_received.get()
         ):
             text_widget.see(tk.END)
+
+    def reset_button_clicked(self):
+        """RESETボタンがクリックされたときの処理"""
+        self.tracker.target_processor.reset_target()
+        self.update_status("Target Data reset.")
 
     def update_rfid_values(self, counts):
         """各アンテナの検出回数を更新します。
