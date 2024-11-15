@@ -174,6 +174,8 @@ namespace RFIDTR {
 
     void goBack() {
         if (operationMode == PID) {
+            leftSpeedChanging = false;
+            rightSpeedChanging = false;
             Omni.setCarBackoff(150);
         } else {
             attachAll();
@@ -218,6 +220,8 @@ namespace RFIDTR {
         }
     }
 
+    unsigned long lastCheck = millis();
+
     // コマンドを処理
     void executeCommand(String cmdStr) {
         model::Command cmd(cmdStr);
@@ -226,6 +230,10 @@ namespace RFIDTR {
 
         if (Commands::is_ignore_same_prev(command, prevCommand)) {
             return;
+        }
+
+        if (command == Commands::CHECK) {
+            lastCheck = millis();
         }
 
         if (command == Commands::STOP) {
@@ -335,13 +343,23 @@ void setup() {
     Serial.println("Setup completed");
 }
 
-void loop() {    
+bool firstConnect = true;
+
+void loop() {
     if (Serial.available()) {
+        if (firstConnect) {
+            Serial.println("Connected.");
+            firstConnect = false;
+        }
         String data = getSerialStr();
         RFIDTR::executeCommand(data);
     }
 
     unsigned long currentTime = millis();
+
+    if (currentTime - RFIDTR::lastCheck > 1000) {
+        RFIDTR::stop();
+    }
 
     // 左モーターの速度変更
     if (RFIDTR::leftSpeedChanging) {

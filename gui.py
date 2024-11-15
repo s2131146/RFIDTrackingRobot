@@ -6,7 +6,7 @@ import time
 from tkinter import TclError, font
 import cv2
 import numpy as np
-from constants import Commands
+from constants import Commands, Position
 import rfid
 import tqueue
 import tkinter as tk
@@ -30,6 +30,10 @@ CONTROL_ROTATE_LEFT = "lr"
 
 AVI_NAME = "tracker.avi"
 MP4_NAME = "tracker.mp4"
+
+TIMER_ACTIVE = 0
+TIMER_START = 1
+TIMER_TRACKING = 2
 
 
 class GUI:
@@ -61,6 +65,7 @@ class GUI:
         self.create_main_frame()
         self.create_control_frame()
         self.create_control_panel()
+        self.create_timer()
 
         self.update_stop()
 
@@ -423,9 +428,90 @@ class GUI:
 
         canvas.itemconfig(text_id, text=new_text)
 
+    def create_timer(self):
+        timer_font = font.Font(family="Consolas", size=16)
+
+        self.label_timer_active = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_timer_active.grid(
+            row=0, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+        self.label_timer_start = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_timer_start.grid(
+            row=1, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+        self.label_timer_tracking = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_timer_tracking.grid(
+            row=2, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+        self.label_tracking_rate = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_tracking_rate.grid(
+            row=3, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+    start_time = time.time()
+    elapsed_start = 0.0
+    elapsed_tracking = 0.0
+
+    def formatted_time(self, id: int):
+        label = ""
+        elapsed_time = time.time() - self.start_time
+        if id == TIMER_ACTIVE:
+            label = "ACTIVE"
+        if id == TIMER_START:
+            label = "START"
+            elapsed_time = self.elapsed_start
+        if id == TIMER_TRACKING:
+            label = "TRACKING"
+            elapsed_time = self.elapsed_tracking
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+        milliseconds = int((elapsed_time * 100) % 100)
+
+        return f"{label}: {minutes:02}:{seconds:02}.{milliseconds:02}"
+
+    def update_timer(self):
+        """some_conditionがTrueのときのみタイマーを加算する"""
+        if not self.destroy:
+            current_time = time.time()
+            # START
+            if self.var_enable_tracking.get():
+                self.elapsed_start += current_time - self.last_update_time_start
+                self.last_update_time_start = current_time
+            else:
+                self.last_update_time_start = time.time()
+
+            # TRACKING
+            if self.tracker.target_position != Position.NONE:
+                self.elapsed_tracking += current_time - self.last_update_time_tracking
+                self.last_update_time_tracking = current_time
+            else:
+                self.last_update_time_tracking = time.time()
+
+            self.label_timer_active.config(text=self.formatted_time(TIMER_ACTIVE))
+            self.label_timer_start.config(text=self.formatted_time(TIMER_START))
+            self.label_timer_tracking.config(text=self.formatted_time(TIMER_TRACKING))
+            self.label_tracking_rate.config(
+                text=f"VCR: {0.00 if self.elapsed_tracking == 0 else (self.elapsed_tracking / self.elapsed_start * 100):.2f}%"
+            )
+
     def create_control_panel(self):
-        self.control_panel_frame = tk.Frame(self.control_frame)
-        self.control_panel_frame.grid(
+        self.button_panel_frame = tk.Frame(self.control_frame)
+        self.button_panel_frame.grid(
             row=0,
             column=1,
             rowspan=6,
@@ -434,9 +520,18 @@ class GUI:
             sticky=STICKY_UP,
         )
 
+        self.controller_frame = tk.Frame(self.control_frame)
+        self.controller_frame.grid(
+            row=6,
+            column=1,
+            padx=DEF_MARGIN,
+            pady=DEF_MARGIN,
+            sticky=STICKY_UP,
+        )
+
         # RESETボタンを矢印操作ボタンの上に配置
         self.reset_button = tk.Button(
-            self.control_panel_frame,
+            self.button_panel_frame,
             text="Change Target",
             font=self.bold_font,
             bg="gray",
@@ -449,13 +544,13 @@ class GUI:
             command=self.reset_button_clicked,
         )
         self.reset_button.grid(
-            row=0, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
+            row=10, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
         )
 
         # グリッドを設定して十字型にボタンを配置
         for i in range(3):
-            self.control_panel_frame.grid_rowconfigure(i, weight=1)
-            self.control_panel_frame.grid_columnconfigure(i, weight=1)
+            self.controller_frame.grid_rowconfigure(i, weight=1)
+            self.controller_frame.grid_columnconfigure(i, weight=1)
 
         arrow_font = font.Font(family="Consolas", size=12, weight="bold")
         button_height = 2
@@ -466,7 +561,7 @@ class GUI:
 
         # 左回転ボタン
         self.button_rotate_left = tk.Button(
-            self.control_panel_frame,
+            self.controller_frame,
             text="↺",  # Unicodeの反時計回りの回転矢印
             width=button_width,
             height=button_height,
@@ -484,7 +579,7 @@ class GUI:
 
         # 右回転ボタン
         self.button_rotate_right = tk.Button(
-            self.control_panel_frame,
+            self.controller_frame,
             text="↻",  # Unicodeの時計回りの回転矢印
             width=button_width,
             height=button_height,
@@ -502,7 +597,7 @@ class GUI:
 
         # 上ボタン
         self.button_up = tk.Button(
-            self.control_panel_frame,
+            self.controller_frame,
             text="↑",
             width=button_width,
             height=button_height,
@@ -520,7 +615,7 @@ class GUI:
 
         # 下ボタン
         self.button_down = tk.Button(
-            self.control_panel_frame,
+            self.controller_frame,
             text="↓",
             width=button_width,
             height=button_height,
@@ -538,7 +633,7 @@ class GUI:
 
         # 左ボタン
         self.button_left = tk.Button(
-            self.control_panel_frame,
+            self.controller_frame,
             text="←",
             width=button_width,
             height=button_height,
@@ -556,7 +651,7 @@ class GUI:
 
         # 右ボタン
         self.button_right = tk.Button(
-            self.control_panel_frame,
+            self.controller_frame,
             text="→",
             width=button_width,
             height=button_height,
@@ -641,6 +736,8 @@ class GUI:
             self.tracker.stop_exec_cmd_gui = False
             self.tracker.send(Commands.STOP)
             return
+
+        self.tracker.send((Commands.SET_DEFAULT_SPEED, 200))
 
         if direction == CONTROL_UP:
             self.tracker.send(Commands.GO_CENTER)
@@ -875,6 +972,7 @@ class GUI:
         self.update_commands("s", self.sent_text, self.label_sent)
         self.update_commands("r", self.received_text, self.label_received)
         self.update_wheel()
+        self.update_timer()
 
     def update_commands(self, key, text_widget, label_widget):
         if self.queue.has(key) and not self.destroy:

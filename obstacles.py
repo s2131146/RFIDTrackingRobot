@@ -35,7 +35,9 @@ class Obstacles:
 
     @classmethod
     def is_fix(cls, obs):
-        return obs == cls.OBS_PARALLEL_FIX or obs == cls.OBS_PARALLEL_FIX_INVERT
+        return obs and (
+            obs == cls.OBS_PARALLEL_FIX or obs == cls.OBS_PARALLEL_FIX_INVERT
+        )
 
     def __init__(
         self,
@@ -45,8 +47,8 @@ class Obstacles:
         obstacle_distance_threshold: float = 500.0,
         min_obstacle_size: Tuple[int, int] = (50, 30),
         tolerance: float = 100.0,
-        min_continuous_increase: int = 20,
-        wall_distance_threshold: float = 5000.0,
+        min_continuous_increase: int = 100,
+        wall_distance_threshold: float = 400.0,
     ):
         """
         Obstaclesクラスを初期化します。
@@ -107,17 +109,17 @@ class Obstacles:
             self.frame_height = depth_image.shape[0]
 
         # フレームの中央20%の領域を計算
-        self.central_start = int(self.frame_width * 0.35)
-        self.central_end = int(self.frame_width * 0.65)
+        self.central_start = int(self.frame_width * 0.3)
+        self.central_end = int(self.frame_width * 0.6)
 
-        self.left_center_start = self.central_start * 4 // 10 - 20
+        self.left_center_start = self.central_start * 4 // 10
         self.left_center_end = self.central_start * 6 // 10 + 30
         self.right_center_start = (
             self.central_end + (self.frame_width - self.central_end) * 4 // 10
         ) - 30
         self.right_center_end = (
             self.central_end + (self.frame_width - self.central_end) * 6 // 10
-        ) + 20
+        )
 
     def process_obstacles(
         self,
@@ -152,6 +154,8 @@ class Obstacles:
 
         # ターゲットのx座標をフレームの中央に合わせる
         target_x = target_x + (self.frame_width // 2)
+
+        center_target = self.is_target_in_center_area(target_bbox)
 
         # 障害物が目の前にあるかを判断
         obstacle_mask_full = depth_image < self.obstacle_distance_threshold
@@ -227,6 +231,16 @@ class Obstacles:
             ignore_x_end,
         )
 
+        if center_target:
+            return (
+                obstacle_visual,
+                self.OBS_NONE,
+                False,
+                False,
+                False,
+                closest_wall_depth,
+            )
+
         if overall_direction:
             return self.OBS_FULL, obstacle_visual
 
@@ -270,6 +284,33 @@ class Obstacles:
             return True
 
         return False
+
+    def is_target_in_center_area(
+        self, target_bbox: Optional[Tuple[int, int, int, int]]
+    ) -> bool:
+        """
+        対象のバウンディングボックスが画面中央領域内に存在するかを判定します。
+
+        引数:
+            target_bbox (Optional[Tuple[int, int, int, int]]): 対象のバウンディングボックス (x1, y1, x2, y2)。
+
+        戻り値:
+            bool: 対象が中央領域に存在する場合は True、それ以外は False。
+        """
+        if target_bbox is None or len(target_bbox) == 0:
+            return False
+
+        x1, _, x2, _ = target_bbox
+        target_width = x2 - x1
+        frame_width = self.frame_width
+
+        # バウンディングボックスのX座標が中央領域に重なり、かつ横幅が画面50%以上かをチェック
+        in_center_area = not (
+            x2 // 2 < self.central_start or x1 // 2 > self.central_end
+        )
+        wide_enough = (target_width / frame_width) >= 0.5
+
+        return in_center_area and wide_enough
 
     def determine_wall_position(
         self,

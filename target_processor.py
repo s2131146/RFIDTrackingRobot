@@ -51,7 +51,7 @@ class TargetProcessor:
 
         self.last_target_features = None  # 直前のターゲットの特徴を保存
         self.current_target = None  # 現在追跡中のターゲット
-        self.color_tolerance = 20  # 色の一致許容範囲（ユークリッド距離）
+        self.color_tolerance = 30  # 色の一致許容範囲（ユークリッド距離）
 
         # 前回のターゲットの中心座標を保持
         self.last_target_center_x = None
@@ -168,12 +168,15 @@ class TargetProcessor:
         # 最初の対象がまだ選ばれていない場合、最も近いターゲットを選択し、その色を記録
         if not self.target_clothing_color:
             selected_target = self.select_closest_target(detected_targets)
-            self.target_clothing_color = selected_target.clothing_color_rgb
         else:
             # 既存の色に最も近いターゲットを選択
             selected_target = self.select_target_by_color(
                 detected_targets, self.target_clothing_color
             )
+
+        # 光や映っている範囲で色が変わるため、逐一更新
+        if selected_target:
+            self.target_clothing_color = selected_target.clothing_color_rgb
 
         # 色に基づいて選択されたターゲットがいない場合、対象をなしに設定
         if selected_target:
@@ -262,7 +265,7 @@ class TargetProcessor:
                 result = self.process_target([target], frame)
                 if result is not None:
                     (target_center_x, target_x, target_bboxes) = result
-                    self.tracker.target_position_str = self.get_target_pos_str(
+                    self.tracker.target_position = self.get_target_pos_str(
                         target_center_x
                     )
                     # 選択されたターゲットの特徴を保存
@@ -369,7 +372,7 @@ class TargetProcessor:
         ]
         for target in detected_targets:
             if target == selected_target:
-                color = (0, 255, 0)  # 緑色 (BGR形式)
+                return
             else:
                 color = (255, 0, 0)  # 青色 (BGR形式)
 

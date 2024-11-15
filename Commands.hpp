@@ -64,8 +64,7 @@ public:
     // 前回と同じコマンドで無視するかを判定
     static bool is_ignore_same_prev(const String &cmd, const String &prev)
     {
-        // STOP, SPD_UP, SPD_DOWN 以外で前回と同じコマンドは無視
-        return (cmd != STOP && cmd != SPD_UP && cmd != SPD_DOWN) && (prev == cmd);
+        return (cmd != STOP && cmd != SPD_UP && cmd != SPD_DOWN && cmd != CHECK) && (prev == cmd);
     }
 };
 

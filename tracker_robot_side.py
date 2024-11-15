@@ -102,7 +102,6 @@ class TrackerSocketRobot:
         try:
             self.com.open()
             self.com_connected = True
-            self.send_to_host("Connected to Arduino")
         except serial.SerialException:
             pass
         return self.com_connected
@@ -117,6 +116,8 @@ class TrackerSocketRobot:
 
     def stop(self):
         self.send_serial("stop")
+
+    last_send_check = time.time()
 
     def send_serial(self, data) -> bool:
         """Send a command via serial communication.
@@ -138,7 +139,10 @@ class TrackerSocketRobot:
         self.command_sent = self.get_command(data).upper()
         self.serial_sent = data
         if data == "YO":
-            return True
+            if time.time() - self.last_send_check < 0.5:
+                return True
+            else:
+                self.last_send_check = time.time()
         data += "\n"
 
         try:
@@ -168,7 +172,7 @@ class TrackerSocketRobot:
 
 client_socket = None
 server_socket = None
-tracker = None
+tracker: TrackerSocketRobot
 pipeline = None
 cam_connected = False
 
@@ -267,7 +271,7 @@ def loop():
                 data = data[len("setup:") :].split(":")
                 tracker = TrackerSocketRobot(*data)
             else:
-                if tracker is not None:
+                if tracker:
                     tracker.on_receive(data)
             if tracker:
                 res, ret = tracker.print_serial()
