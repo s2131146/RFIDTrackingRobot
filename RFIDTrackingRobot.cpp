@@ -200,8 +200,8 @@ namespace RFIDTR {
         if (operationMode == PID) {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
-            setRightMotorSpeed(150, true, true);
-            setLeftMotorSpeed(150, false, true);
+            setRightMotorSpeed(200, true, true);
+            setLeftMotorSpeed(200, false, true);
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(FORWARD);
@@ -214,8 +214,8 @@ namespace RFIDTR {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
             stop();
-            setRightMotorSpeed(150, false, true);
-            setLeftMotorSpeed(150, true, true);
+            setRightMotorSpeed(200, false, true);
+            setLeftMotorSpeed(200, true, true);
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(REVERSE);

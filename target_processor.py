@@ -38,25 +38,42 @@ class TargetProcessor:
 
     from tracker import Tracker
 
+
+class TargetProcessor:
     def __init__(
-        self, frame_width, frame_height, model: YOLO, logger, tracker: Tracker
+        self,
+        frame_width: int,
+        frame_height: int,
+        model: YOLO,
+        logger,
+        tracker,
+        min_target_size: Tuple[int, int] = (30, 60),
     ):
+        """
+        対象検出クラスの初期化
+
+        Args:
+            frame_width (int): フレームの幅
+            frame_height (int): フレームの高さ
+            model (YOLO): YOLOモデル
+            logger: ロガー
+            tracker: Trackerオブジェクト
+            min_target_size (Tuple[int, int]): 対象とみなす最小の幅と高さ (デフォルト: (30, 60))
+        """
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.logger = logger
         self.tracker = tracker
         self.model = model.to("cuda")
-
+        self.min_target_width, self.min_target_height = (
+            min_target_size  # 最小サイズを設定
+        )
         self.prev_command = Commands.STOP_TEMP
-
-        self.last_target_features = None  # 直前のターゲットの特徴を保存
-        self.current_target = None  # 現在追跡中のターゲット
-        self.color_tolerance = 30  # 色の一致許容範囲（ユークリッド距離）
-
-        # 前回のターゲットの中心座標を保持
+        self.last_target_features = None
+        self.current_target = None
+        self.color_tolerance = 30
         self.last_target_center_x = None
         self.last_target_center_y = None
-
         self.target_clothing_color = None
 
     def reset_target(self):
@@ -189,7 +206,10 @@ class TargetProcessor:
     def select_target_by_color(
         self, targets: List[Target], target_color: Tuple[int, int, int]
     ) -> Optional[Target]:
-        """指定された色に最も近いターゲットを選択します。"""
+        """
+        指定された色に最も近いターゲットを選択します。
+        一致する色の中で、前回検出したターゲットの座標に最も近いターゲットを選択します。
+        """
         # 色が一致するターゲットをフィルタリング
         matching_targets = [
             t
@@ -198,12 +218,51 @@ class TargetProcessor:
             <= self.color_tolerance
         ]
 
-        # 一致するターゲットがある場合、最も近いターゲットを選択
-        if matching_targets:
-            return self.select_closest_target(matching_targets)
+        # 一致するターゲットが存在しない場合
+        if not matching_targets:
+            return None
 
-        # 一致するターゲットがない場合、対象をなしに設定
-        return None
+        # 前回のターゲットの座標が利用可能な場合、最も近いターゲットを選択
+        if (
+            self.last_target_center_x is not None
+            and self.last_target_center_y is not None
+        ):
+            selected_target = min(
+                matching_targets,
+                key=lambda t: self.calculate_distance(
+                    (t.center_x, t.y1 + (t.y2 - t.y1) // 2),
+                    (self.last_target_center_x, self.last_target_center_y),
+                ),
+            )
+        else:
+            # 前回のターゲット情報がない場合は最も近いターゲットを選択
+            selected_target = self.select_closest_target(matching_targets)
+
+        # 選択されたターゲットの色情報を更新
+        self.target_clothing_color = selected_target.clothing_color_rgb
+
+        # 前回のターゲットの座標を更新
+        self.last_target_center_x = selected_target.center_x
+        self.last_target_center_y = (
+            selected_target.y1 + (selected_target.y2 - selected_target.y1) // 2
+        )
+
+        return selected_target
+
+    def calculate_distance(
+        self, point1: Tuple[int, int], point2: Tuple[int, int]
+    ) -> float:
+        """
+        2点間のユークリッド距離を計算します。
+
+        Args:
+            point1 (Tuple[int, int]): 座標1 (x, y)
+            point2 (Tuple[int, int]): 座標2 (x, y)
+
+        Returns:
+            float: 2点間の距離
+        """
+        return math.sqrt((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2)
 
     def select_closest_target(self, targets: List[Target]) -> Target:
         """最も近いターゲットを選択します。"""
@@ -420,6 +479,17 @@ class TargetProcessor:
                 if cls == 0 and confidence > 0.5:  # クラス0が人物の場合
                     coords = box.xyxy[0].tolist()
                     x1, y1, x2, y2 = map(int, coords)
+
+                    # バウンディングボックスの幅と高さを計算
+                    bbox_width = x2 - x1
+                    bbox_height = y2 - y1
+
+                    # 最小サイズを満たさない場合はスキップ
+                    if (
+                        bbox_width < self.min_target_width
+                        or bbox_height < self.min_target_height
+                    ):
+                        continue
 
                     # 例として、バウンディングボックス内の平均色を服の色とする
                     bbox = frame[y1:y2, x1:x2]

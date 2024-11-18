@@ -48,7 +48,7 @@ class Obstacles:
         min_obstacle_size: Tuple[int, int] = (50, 30),
         tolerance: float = 100.0,
         min_continuous_increase: int = 100,
-        wall_distance_threshold: float = 400.0,
+        wall_distance_threshold: float = 600.0,
     ):
         """
         Obstaclesクラスを初期化します。
