@@ -46,7 +46,9 @@ class Commands:
     SET_DEFAULT_SPEED: ClassVar[str] = "SD"
     ROTATE_RIGHT: ClassVar[str] = "RR"
     ROTATE_LEFT: ClassVar[str] = "RL"
+    DETACH_MOTOR: ClassVar[str] = "DETACH"
 
+    DISCONNECT: ClassVar[str] = "DC"
     DEBUG_PID_INIT: ClassVar[str] = "PID"
 
     IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK}

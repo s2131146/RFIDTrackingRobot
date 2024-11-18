@@ -1,3 +1,4 @@
+#include "HardwareSerial.h"
 #include "Arduino.h"
 #include <Servo.h>
 
@@ -23,8 +24,9 @@ const int STOP = 0;
 
 // 動作モード
 enum OperationMode {
-    PID,    // PID制御    *モーターが加速するバグあり
-    SERVO   // サーボ制御  * 速度調整不可 
+    PID,    // PID制御    *デフォルト
+    SERVO,  // サーボ制御  * 速度調整不可
+    FIX     // 暴走修復    * 必ずモーターを浮かせて実行してください
 };
 
 Servo wheels[2];
@@ -40,7 +42,7 @@ MotorWheel wheel3(3, 2, 4, 5, &irq3);        // 右モーター: Pin3:PWM, Pin2:
 
 Omni3WD Omni(&wheel1, &wheel2, &wheel3);
 
-const OperationMode operationMode = PID;
+OperationMode operationMode = PID;
 
 // 速度定数
 // MAX: 500
@@ -177,6 +179,7 @@ namespace RFIDTR {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
             Omni.setCarBackoff(150);
+            Omni.PIDRegulate();
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(FORWARD);
@@ -335,12 +338,24 @@ void setup() {
     TCCR2B = TCCR2B & 0xf8 | 0x01; // Pin3, Pin11 PWM 31250Hz
 
     // 0.26, 100.0, 10.0, 10    Works fine (Forced)
+    // 0.26, 100.0, 0, 2        Works fine
     // 0.26, 0.02, 0, 10        Works fine
     if (operationMode == PID) {
         Omni.PIDEnable(0.26, 0.02, 0, 10);
     }
 
-    Serial.println("Setup completed");
+    if (operationMode == FIX) {
+        Serial.println("Fix starting...");
+        operationMode = PID;
+        Omni.PIDEnable(0.26, 100.0, 10.0, 10);  // パラメータをガチャガチャいじるといつか治る
+        delay(10);
+        Omni.setCarAdvance(300);
+        delay(1000);
+        Omni.setCarStop();
+        Serial.println("Fix finished.");
+    } else {
+        Serial.println("Setup completed");
+    }
 }
 
 bool firstConnect = true;
@@ -356,7 +371,7 @@ void loop() {
     }
 
     unsigned long currentTime = millis();
-
+    
     if (currentTime - RFIDTR::lastCheck > 1000) {
         RFIDTR::stop();
     }

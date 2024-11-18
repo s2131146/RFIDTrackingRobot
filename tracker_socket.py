@@ -1,4 +1,5 @@
 import math
+import threading
 import time
 import socket
 import traceback
@@ -62,8 +63,8 @@ class TrackerSocket:
             return None
 
     def test_connect(self):
-        if not self.active_loop:
-            return
+        if not self.active_loop or self.disconnecting:
+            return False
         try:
             test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             test.settimeout(0.5)
@@ -93,12 +94,17 @@ class TrackerSocket:
             await asyncio.get_event_loop().sock_connect(
                 self.client_socket, (self.tcp_ip, self.tcp_port)
             )
+            self.disconnecting = False
             self.ser_connected = True
             logger.info("[Socket] Socket connected.")
             self.send_startup()
         except socket.error as e:
             logger.error("[Socket] An error occured at connect_socket: {}".format(e))
             self.ser_connected = False
+
+            import tracker
+
+            tracker.run_robot_if_needed()
         return self.ser_connected
 
     async def receive_data(self):
@@ -250,6 +256,20 @@ class TrackerSocket:
             data = data.split(":")[0].upper()
 
         return data
+
+    disconnecting = False
+
+    def disconnect(self):
+        if self.ser_connected:
+            self.disconnecting = True
+            self.send_data(Commands.DISCONNECT)
+            self.ser_connected = False
+            self.loop_serial = False
+            self.client_socket.close()
+
+    def reconnect(self):
+        if self.disconnecting:
+            asyncio.run(self.connect_socket())
 
     def send_data(self, data):
         message = f"START{data}END"

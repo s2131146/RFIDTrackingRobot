@@ -3,7 +3,6 @@ import sys
 import traceback
 import serial
 import string
-import datetime
 import pyrealsense2 as rs
 import numpy as np
 import math
@@ -11,6 +10,8 @@ import time
 import cv2
 import os
 import logging
+
+from constants import Commands
 
 LOG_FILENAME = "robot.log"
 
@@ -63,6 +64,11 @@ class TrackerSocketRobot:
         else:
             data = remaining_parts[0]
 
+        if data == Commands.DETACH_MOTOR:
+            self.com.dtr = False
+            time.sleep(0.1)
+            self.com.dtr = True
+
         if cmd == "connect":
             self.connect_socket()
         elif cmd == "close":
@@ -70,7 +76,10 @@ class TrackerSocketRobot:
         elif cmd == "send":
             ret = self.send_serial(data)
             self.send_to_host(
-                ret, cmd_id, "send", True if data == "YO" or data == "STMP" else False
+                ret,
+                cmd_id,
+                "send",
+                True if data == Commands.CHECK or data == Commands.STOP_TEMP else False,
             )
         elif cmd == "print":
             res, ret = self.print_serial()
@@ -138,7 +147,7 @@ class TrackerSocketRobot:
 
         self.command_sent = self.get_command(data).upper()
         self.serial_sent = data
-        if data == "YO":
+        if data == Commands.CHECK:
             if time.time() - self.last_send_check < 0.5:
                 return True
             else:
@@ -258,7 +267,7 @@ def receive_data():
 
 
 def loop():
-    global tracker, cam_connected
+    global tracker, cam_connected, reconnect
     try:
         while True:
             if not cam_connected:
@@ -267,6 +276,10 @@ def loop():
             data = receive_data()
             if not data:
                 continue
+            if data.startswith(Commands.DISCONNECT):
+                reconnect = True
+                tracker.send_to_host("Waiting for reconnect...")
+                return
             if data.startswith("setup:"):
                 data = data[len("setup:") :].split(":")
                 tracker = TrackerSocketRobot(*data)
@@ -298,6 +311,8 @@ def main():
         init()
         pr("Loop starting")
         loop()
+        if tracker:
+            tracker.close()
     except KeyboardInterrupt:
         if tracker:
             tracker.stop()
@@ -348,6 +363,8 @@ def init_cam():
         return False
 
 
+reconnect = False
+
 if __name__ == "__main__":
     pr("RFID Human Tracker [Robot] 2024 Metoki.")
     pr("Starting...")
@@ -358,5 +375,6 @@ if __name__ == "__main__":
     pr("Startup completed. Elapsed: {}ms".format(math.floor((time.time() - s) * 1000)))
     while True:
         main()
-        if not (len(sys.argv) > 1 and sys.argv[1] == "--no_abort"):
+        if not (len(sys.argv) > 1 and sys.argv[1] == "--no_abort") and not reconnect:
             break
+        reconnect = False

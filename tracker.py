@@ -300,6 +300,9 @@ class Tracker:
         cv2.rectangle(self.frame, top_left, bottom_right, (0, 255, 255), thickness)
 
     def send(self, data):
+        if not self.gui.var_enable_serial.get():
+            return
+
         if isinstance(data, tuple):
             command, value = data
             data = f"{command}:{value}"
@@ -316,6 +319,7 @@ class Tracker:
             and data != Commands.CHECK
             and data != Commands.STOP
             and data != Commands.STOP_TEMP
+            and data != Commands.DETACH_MOTOR
         ):
             return True
 
@@ -956,6 +960,7 @@ class Tracker:
                 and not self.stop_temp
                 and not self.stop_exec_cmd
                 and not self.stop_exec_cmd_gui
+                and self.gui.var_enable_tracking.get()
             ):
                 self.send((Commands.L_SPEED, self.motor_power_l))
                 self.bkl = self.motor_power_l
@@ -1125,26 +1130,26 @@ class Tracker:
 
         self.root.mainloop()
 
+    @classmethod
+    def is_process_running(cls, process_name):
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline")
+                if cmdline and process_name in cmdline:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False
 
-def is_process_running(process_name):
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            cmdline = proc.info.get("cmdline")
-            if cmdline and process_name in cmdline:
-                return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return False
-
-
-def run_robot_if_needed():
-    if not is_process_running("tracker_robot_side.py"):
-        logger.info("Robot process is not running. Starting...")
-        subprocess.Popen(["python", "tracker_robot_side.py"])
+    @classmethod
+    def run_robot_if_needed(cls):
+        if not cls.is_process_running("tracker_robot_side.py"):
+            logger.info("Robot process is not running. Starting...")
+            subprocess.Popen(["python", "tracker_robot_side.py"])
 
 
 def main():
-    run_robot_if_needed()
+    Tracker.run_robot_if_needed()
     tracker = Tracker()
     logger.info("Initializing GUI")
     tracker.root = tk.Tk()

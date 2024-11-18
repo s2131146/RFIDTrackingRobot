@@ -242,6 +242,7 @@ class GUI:
         self.bottom_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame.grid_columnconfigure(1, weight=1)
         self.bottom_frame.grid_columnconfigure(2, weight=1)
+        self.bottom_frame.grid_columnconfigure(3, weight=1)
 
         self.var_enable_tracking = tk.IntVar(value=tracker.DEBUG_ENABLE_TRACKING)
         self.enable_tracking_checkbox = tk.Checkbutton(
@@ -268,6 +269,15 @@ class GUI:
             variable=self.var_slow,
         )
         self.slow_checkbox.grid(row=1, column=2, padx=0, pady=0, sticky=STICKY_LEFT)
+
+        self.var_enable_serial = tk.IntVar(value=1)
+        self.serial_checkbox = tk.Checkbutton(
+            self.bottom_frame,
+            text="Enable Serial",
+            variable=self.var_enable_serial,
+            command=self.update_enable_serial,
+        )
+        self.serial_checkbox.grid(row=1, column=3, padx=0, pady=0, sticky=STICKY_LEFT)
 
         self.label_wheel = tk.Label(self.bottom_frame)
         self.label_wheel.grid(row=0, column=1, padx=0, pady=0, sticky=STICKY_CENTER)
@@ -484,6 +494,14 @@ class GUI:
 
         return f"{label}: {minutes:02}:{seconds:02}.{milliseconds:02}"
 
+    def update_enable_serial(self):
+        if self.var_enable_serial.get():
+            self.tracker.serial.reconnect()
+            self.update_status("Serial reconnected.")
+        else:
+            self.tracker.serial.disconnect()
+            self.update_status("Serial disconnected.")
+
     def update_timer(self):
         """some_conditionがTrueのときのみタイマーを加算する"""
         if not self.destroy:
@@ -545,6 +563,23 @@ class GUI:
         )
         self.reset_button.grid(
             row=10, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
+        )
+
+        self.reset_button = tk.Button(
+            self.button_panel_frame,
+            text="RESET ROBOT",
+            font=self.bold_font,
+            bg="red",
+            fg="white",
+            borderwidth=4,  # ボタンの境界線幅を増加
+            relief="solid",  # 境界線を実線に設定
+            highlightbackground="black",  # ハイライト背景色を黒に設定
+            highlightcolor="black",  # ハイライト色を黒に設定
+            highlightthickness=2,  # ハイライトの厚さを設定
+            command=self.detach_button_clicked,
+        )
+        self.reset_button.grid(
+            row=11, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
         )
 
         # グリッドを設定して十字型にボタンを配置
@@ -998,6 +1033,10 @@ class GUI:
             and self.var_auto_scroll_received.get()
         ):
             text_widget.see(tk.END)
+
+    def detach_button_clicked(self):
+        self.tracker.send(Commands.DETACH_MOTOR)
+        self.update_status("Reset Arduino.")
 
     def reset_button_clicked(self):
         """RESETボタンがクリックされたときの処理"""
