@@ -56,7 +56,7 @@ class GUI:
         self.motor_right_var = tk.StringVar(value="0%")
 
         # モード選択用のStringVarを初期化
-        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.CAM_ONLY.name)
+        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.RFID_ONLY.name)
 
         # 自動スクロールの変数を初期化
         self.var_auto_scroll_received = tk.IntVar(value=1)
@@ -474,6 +474,7 @@ class GUI:
         )
 
     start_time = time.time()
+    last_update_time_tracking = time.time()
     elapsed_start = 0.0
     elapsed_tracking = 0.0
 
@@ -524,7 +525,7 @@ class GUI:
             self.label_timer_start.config(text=self.formatted_time(TIMER_START))
             self.label_timer_tracking.config(text=self.formatted_time(TIMER_TRACKING))
             self.label_tracking_rate.config(
-                text=f"VCR: {0.00 if self.elapsed_tracking == 0 else (self.elapsed_tracking / self.elapsed_start * 100):.2f}%"
+                text=f"VCR: {0.00 if not self.elapsed_tracking or not self.elapsed_start else (self.elapsed_tracking / self.elapsed_start * 100):.2f}%"
             )
 
     def create_control_panel(self):

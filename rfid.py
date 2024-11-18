@@ -40,6 +40,8 @@ class RFIDReader:
         self.prevent_transition = True  # 方向転換を一時的に防ぐフラグ
         self.last_move_direction = Commands.GO_LEFT
 
+        self.signal_strength = 40  # 初期値を40に設定
+
         try:
             self.ser = serial.Serial(
                 port=self.port,
@@ -53,6 +55,42 @@ class RFIDReader:
         except Exception as e:
             logger.logger.error(f"Failed to initialize RFID Reader: {e}")
             self.no_reader = True
+
+    def set_signal_strength(self, strength):
+        """電波の強さを設定"""
+        if 25 <= strength <= 40 and strength != self.signal_strength:
+            command = f"N1,{strength - 14}"  # 強さを26ベースに調整
+            self.send_command(command)
+            self.signal_strength = strength
+            logger.logger.info(f"Signal strength set to {strength}.")
+        else:
+            logger.logger.debug(
+                f"No change in signal strength (current: {self.signal_strength}, requested: {strength})."
+            )
+
+    def adjust_signal_strength(self):
+        """検出回数に基づいて電波の強さを動的に変更"""
+        with self.lock:
+            # 最も検出されたアンテナの回数と数を取得
+            max_detection = max(self.detection_counts_sec.values(), default=0)
+            num_with_4_or_more = sum(
+                1 for count in self.detection_counts_sec.values() if count >= 4
+            )
+
+        # 条件に基づいて目標電波強度を設定
+        if max_detection == 0:
+            target_strength = 40
+        elif max_detection >= 4 and num_with_4_or_more <= 2:
+            target_strength = self.signal_strength  # 強度を変えない
+        elif max_detection >= 4 and num_with_4_or_more > 2:
+            target_strength = max(25, self.signal_strength - 2)  # 強度を下げる
+        elif max_detection <= 3:
+            target_strength = min(40, self.signal_strength + 2)  # 強度を上げる
+        else:
+            target_strength = self.signal_strength  # 何もしない
+
+        # 電波強度を変更
+        self.set_signal_strength(target_strength)
 
     def check_antenna_status(self):
         antenna_status = [False, False, False, False]
@@ -75,7 +113,9 @@ class RFIDReader:
                 else:
                     full_command = command
                 self.ser.write(full_command.encode())
-                time.sleep(0.05)  # 最小0.016秒、ただし正常に取れない可能性あり
+                time.sleep(
+                    0.016
+                )  # 最小0.016秒、ただし正常に取れない可能性あり 安定は0.05
                 response = self.ser.read_all().decode(errors="ignore")
                 response = re.sub(r"[\n\t\r]", "", response)
                 return response
@@ -184,13 +224,14 @@ class RFIDReader:
     def monitor_rfid(self):
         """RFIDタグを監視し、検出回数に基づいて方向を予測します。"""
         try:
+            start_time = time.time()
             while self.running:
                 # 1. CENTER、LEFT、RIGHTアンテナでEPC読み取り
                 for antenna_id in [1, 2, 3]:
                     if (
                         antenna_id > 1
                         and self.get_detection_counts()[RFIDAntenna.CENTER.value] <= 1
-                    ) or antenna_id == 1:
+                    ) or (antenna_id == 1 and self.current_antenna != 1):
                         self.switch_antenna(antenna_id)
                         for _ in range(5):
                             self.read_epc()
@@ -244,6 +285,11 @@ class RFIDReader:
                     self.last_direction = new_direction
                     for key in self.detection_counts:
                         self.detection_counts[key] = 0
+
+                # 電波の強さを調整
+                if time.time() - start_time >= 1.0:  # 1秒経過後に調整
+                    start_time = time.time()
+                    self.adjust_signal_strength()
 
                 # 方向を直接設定
                 with self.lock:
@@ -302,7 +348,7 @@ class RFIDReader:
 
 
 def main():
-    reader = RFIDReader(port="COM4", baudrate=38400)
+    reader = RFIDReader(port="COM8", baudrate=38400)
     reader.start_reading()
     try:
         while True:
