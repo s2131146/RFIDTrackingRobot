@@ -54,6 +54,14 @@ class Commands:
     IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK}
 
     @classmethod
+    def convert_to_rotate(cls, go):
+        if go == cls.GO_LEFT:
+            return cls.ROTATE_LEFT
+        if go == cls.GO_RIGHT:
+            return cls.ROTATE_RIGHT
+        return go
+
+    @classmethod
     def is_ignore(cls, cmd: str) -> bool:
         """
         指定されたコマンドが無視リストに含まれているかを判定します。

@@ -52,7 +52,7 @@ DEBUG_ENABLE_TRACKING = False
 DEBUG_SLOW_SPEED = 150
 
 DELAY_SPEED_FAST = 4
-DELAY_SPEED_SLOW = 8
+DELAY_SPEED_SLOW = 6
 
 # Cascade 関連のフラグとリストを削除
 
@@ -143,6 +143,7 @@ class Tracker:
         self.fps_count = 0
         self.bkl = 0
         self.bkr = 0
+        self.stop_exec_cmd = False
 
         self.send_check_start_time = 0
         self.sent_count = 0
@@ -320,6 +321,8 @@ class Tracker:
             and data != Commands.STOP
             and data != Commands.STOP_TEMP
             and data != Commands.DETACH_MOTOR
+            and data != Commands.SPD_UP
+            and data != Commands.SPD_DOWN
         ):
             return True
 
@@ -342,7 +345,6 @@ class Tracker:
             self.stop = True
             self.motor_power_l = 0
             self.motor_power_r = 0
-            self.lost_target_command = Commands.STOP_TEMP
             self.gui.update_stop()
             logger.info("Motor stopped")
         elif c == Commands.START:
@@ -624,7 +626,6 @@ class Tracker:
 
     def init_detection_flags(self):
         self.target_position = Position.NONE
-        self.stop_exec_cmd = False
         self.target_x = -1
         self.obs_detected = False
 
@@ -639,8 +640,9 @@ class Tracker:
                     np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
                 )
 
-    def execute_rfid_direction(self, multi_targets=False):
-        """RFIDの移動方向を取得して移動指示を送信する"""
+    def apply_rfid_direction(self, multi_targets=False):
+        if not self.gui.var_enable_tracking.get():
+            return
         self.rfid_accessing = True
         if not self.stop or (self.auto_stop and self.mode == Tracker.Mode.DUAL):
             if multi_targets:
@@ -657,7 +659,10 @@ class Tracker:
             if direction != Commands.STOP_TEMP and self.auto_stop:
                 self.start_motor()
 
-            self.send(direction)
+            self.lost_target_command = Position.convert_to_rotate(direction)
+            logger.info(
+                f"RFID Direction applied to lost command: {self.lost_target_command}"
+            )
 
     def process_targets(self):
         """ターゲットの処理を行う"""
@@ -698,6 +703,7 @@ class Tracker:
                     self._handle_no_targets(current_time)
                 else:
                     self.stop_temp = False
+                    self.stop_exec_cmd = False
             else:
                 self._handle_no_targets(current_time)
 
@@ -716,26 +722,9 @@ class Tracker:
                 self.target_position = self.get_target_pos_str(target_center_x)
 
         if self.RFID_ENABLED:
-            self.execute_rfid_direction()
+            self.apply_rfid_direction()
 
         return selected_target
-
-    def _process_single_target(self, detected_targets, current_time):
-        """単一のターゲットを検出した場合の処理"""
-        target = detected_targets[0]
-        if self.target_detection_start_time is None:
-            self.target_detection_start_time = current_time
-        else:
-            self.time_detected = current_time - self.target_detection_start_time
-            if self.time_detected >= 0.3:
-                self.target_last_seen_time = current_time
-                self.stop_temp = False
-                result = self.target_processor.process_target([target], self.frame)
-                if result is not None:
-                    target_center_x, self.target_x, _ = result
-                    self.target_position = self.get_target_pos_str(target_center_x)
-
-        return target
 
     @classmethod
     def map_value_to_scale(
@@ -795,7 +784,7 @@ class Tracker:
         if time_since_last_seen > 1.0 and not self.stop_temp:
             self.find_target_rotate = False
             if self.RFID_ENABLED:
-                self.execute_rfid_direction()
+                self.apply_rfid_direction()
             elif not self.stop and not self.stop_exec_cmd_gui:
                 self.exec_lost_target_command()
 
@@ -854,14 +843,6 @@ class Tracker:
             and self.lost_target_command != Position.convert_to_rotate(self.wall)
         )
 
-        # 壁を見つけてもノイズを考慮して見守る
-        find_target = False
-        if wall != bk_wall:
-            if time.time() - self.in_lost_detect_wall_time > 1:
-                find_target = True
-        else:
-            self.in_lost_detect_wall_time = time.time()
-
         if (
             self.wall == self.last_wall_detect
             and self.wall == bk_wall
@@ -869,20 +850,12 @@ class Tracker:
         ):
             self.last_wall_detect_time = time.time()
 
-        # 壁がなくなっても車体が出るまで待機
-        if (
-            self.last_wall_detect != Position.NONE
-            and time.time() - self.last_wall_detect_time
-            < self.map_value_to_scale(self.default_speed)
-            and not self.avoid_wall
+        if not self.tracking_target_invisible or (
+            (self.avoid_wall or self.wall_parallel) and self.tracking_target_invisible
         ):
-            return False
+            self.last_wall_avoid_time = time.time()
 
-        if self.avoid_wall or (
-            self.wall_parallel and not skip_parallel and find_target
-        ):
-            if not self.tracking_target_invisible:
-                self.last_wall_avoid_time = time.time()
+        if self.avoid_wall or (self.wall_parallel and not skip_parallel):
             self.last_wall_detect = self.wall
 
             if self.avoid_wall:
@@ -930,14 +903,14 @@ class Tracker:
         """RFIDモード時にターゲット方向を送信"""
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
             self.target_position = self.rfid_reader.get_direction()
-            if not self.stop:
+            if not self.stop and self.gui.var_enable_tracking.get():
                 if self._prev_send_rfid_command != self.target_position:
                     self.send(self.target_position)
                     self._prev_send_rfid_command = self.target_position
 
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
-        if self.gui.var_slow.get():
+        if self.gui.var_slow.get() or self.mode == self.Mode.RFID_ONLY.name:
             self.default_speed = DEBUG_SLOW_SPEED
         if self._def_spd_bk != self.default_speed:
             self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
@@ -1010,14 +983,14 @@ class Tracker:
             self.disconnect = False
 
     def update_debug_info(self):
-        delay_find = self.map_value_to_scale(self.default_speed)
-        delay_find = (
-            delay_find
-            if not self.tracking_target_invisible
-            else delay_find - (time.time() - self.last_wall_avoid_time)
-        )
+        delay_find_map = self.map_value_to_scale(self.default_speed)
+        delay_find = delay_find_map - (time.time() - self.last_wall_avoid_time)
 
         delay = time.time() - self.last_wall_detect_time
+
+        rfid_power = 0
+        if self.rfid_reader:
+            rfid_power = self.rfid_reader.signal_strength
 
         debug_text = (
             f"{self.seg} {math.floor(self.frame_width)} x {math.floor(self.frame_height)} "
@@ -1030,10 +1003,10 @@ class Tracker:
             f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
             f"avoid: {self.avoid_wall} no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
             f"detecting: {round(self.time_detected, 2):.2f} track_out: {self.tracking_target_invisible}\n"
-            f"RFID: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} RFID_Power: {self.rfid_reader.signal_strength} def_speed: {self.default_speed} parallel: {self.wall_parallel}\n"
+            f"RFID: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} RFID_Power: {rfid_power} def_spd: {self.default_speed} parallel: {self.wall_parallel}\n"
             f"auto_stop: {self.auto_stop} close: {self.is_close} occupancy: {self.occupancy_ratio:.2%} exec_stop: {self.stop_exec_cmd}\n"
             f"no_wall: {delay:.2f} last_wall_detect: {self.last_wall_detect} close_wall: {self.too_close_wall} closest: {self.closest_wall_depth} lost: {self.lost_target_command}\n"
-            f"delay_find: {delay_find:.2f} rb_wall: {self.reset_to_backup} last_wall_avoid: {self.last_wall_avoid} stmp: {self.stop_temp} find: {self.find_target_rotate}"
+            f"map: {delay_find_map:.2f} dfind: {delay_find:.2f} rb_wall: {self.reset_to_backup} w_avoid: {self.last_wall_avoid} stmp: {self.stop_temp} find: {self.find_target_rotate}\n"
         )
         self.print_d(debug_text)
         self.print_key_binds()

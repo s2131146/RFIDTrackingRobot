@@ -45,8 +45,8 @@ Omni3WD Omni(&wheel1, &wheel2, &wheel3);
 OperationMode operationMode = PID;
 
 // 速度定数
-// MAX: 500
-const int MAX_SPEED = 500;
+// MAX: 500, 400以上で暴走
+const int MAX_SPEED = 400;
 const int MIN_SPEED = 150;
 
 int DEFAULT_SPEED = 300;
@@ -178,7 +178,7 @@ namespace RFIDTR {
         if (operationMode == PID) {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
-            Omni.setCarBackoff(150);
+            Omni.setCarBackoff(currentSpeed);
             Omni.PIDRegulate();
         } else {
             attachAll();
@@ -289,18 +289,21 @@ namespace RFIDTR {
             if (command == Commands::SPD_UP) {
                 currentSpeed += 50;
                 if (currentSpeed > MAX_SPEED) currentSpeed = MAX_SPEED;
-                Omni.setCarAdvance(currentSpeed);
+                setLeftMotorSpeed(currentSpeed, false, true);
+                setRightMotorSpeed(currentSpeed, false, true);
                 Serial.println("Speed increased to: " + String(currentSpeed));
             }
             else if (command == Commands::SPD_DOWN) {
                 currentSpeed -= 50;
                 if (currentSpeed < MIN_SPEED) currentSpeed = MIN_SPEED;
-                Omni.setCarAdvance(currentSpeed);
+                setLeftMotorSpeed(currentSpeed, false, true);
+                setRightMotorSpeed(currentSpeed, false, true);
                 Serial.println("Speed decreased to: " + String(currentSpeed));
             }
             else if (command == Commands::SPD_RESET) {
                 currentSpeed = DEFAULT_SPEED;
-                Omni.setCarAdvance(currentSpeed);
+                setLeftMotorSpeed(currentSpeed, false, true);
+                setRightMotorSpeed(currentSpeed, false, true);
                 Serial.println("Speed reset to: " + String(currentSpeed));
             }
         }

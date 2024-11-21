@@ -3,7 +3,7 @@ import subprocess
 import os
 import threading
 import time
-from tkinter import TclError, font
+from tkinter import font
 import cv2
 import numpy as np
 from constants import Commands, Position
@@ -13,7 +13,7 @@ import tkinter as tk
 import tracker
 from tkinter import ttk
 from tkinter import scrolledtext as st
-from PIL import Image, ImageTk, ImageGrab
+from PIL import Image, ImageTk
 
 DEF_MARGIN = 12
 STICKY_UP = "n"

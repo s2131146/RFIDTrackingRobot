@@ -40,6 +40,10 @@ class TargetProcessor:
 
 
 class TargetProcessor:
+    from tracker import Tracker
+
+    tracker: Tracker
+
     def __init__(
         self,
         frame_width: int,
@@ -71,7 +75,7 @@ class TargetProcessor:
         self.prev_command = Commands.STOP_TEMP
         self.last_target_features = None
         self.current_target = None
-        self.color_tolerance = 30
+        self.color_tolerance = 20
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
@@ -111,7 +115,7 @@ class TargetProcessor:
             self.tracker.CLOSE_OCCUPANCY_RATIO,  # 例: 0.4
             self.tracker.AUTO_STOP_OCCUPANCY_RATIO,  # 例: 0.6
         ]
-        speeds = [350, 250, 100]
+        speeds = [400, 300, 150]
 
         occupancy = self.tracker.occupancy_ratio
 
@@ -140,7 +144,7 @@ class TargetProcessor:
         x_centered = target_center_x - (self.frame_width // 2)
 
         # 中央の判定幅を画面幅の6分の1に設定
-        central_threshold = self.frame_width // 6
+        central_threshold = self.frame_width // 10
 
         if x_centered < -central_threshold:
             target_position = Position.LEFT
