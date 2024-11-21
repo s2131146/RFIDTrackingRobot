@@ -13,8 +13,8 @@ class Position:
     def invert(cls, pos):
         if pos == cls.LEFT:
             return cls.RIGHT
-        if pos == cls.LEFT:
-            return cls.RIGHT
+        if pos == cls.RIGHT:
+            return cls.LEFT
         return pos
 
     @classmethod

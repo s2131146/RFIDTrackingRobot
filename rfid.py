@@ -212,7 +212,7 @@ class RFIDReader:
             return Commands.STOP_TEMP
 
         # 4. LEFTとRIGHTの検出回数が異なる場合、検出回数が多い方の方向に設定
-        if left != right:
+        if left != right and center <= 1:
             if left > right:
                 return Commands.GO_LEFT
             else:
@@ -230,7 +230,7 @@ class RFIDReader:
                 return Commands.GO_RIGHT
 
         # 7. 最も検出回数が多い方向へ移動。ただし、各方向が3回以上の場合は前へ
-        if max_count > 0 and total_ge1 == 0:
+        if max_count > 0:
             antenna = antennas_with_max[0]
             direction = ANTENNA_MAPS[antenna]
             return self.direction_to_command(direction)
@@ -319,7 +319,7 @@ class RFIDReader:
                         ]
                     )
                     # 方向と検出回数をログに記録
-                    logger.logger.info(
+                    logger.logger.debug(
                         f"Direction: {self.predict_direction}, Counts: {counts_str}"
                     )
 

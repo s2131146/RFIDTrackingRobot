@@ -178,7 +178,7 @@ namespace RFIDTR {
         if (operationMode == PID) {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
-            Omni.setCarBackoff(currentSpeed);
+            Omni.setCarBackoff(180);
             Omni.PIDRegulate();
         } else {
             attachAll();
@@ -347,10 +347,11 @@ void setup() {
         Omni.PIDEnable(0.26, 0.02, 0, 10);
     }
 
+    // 修復モード. いろいろ試してね
     if (operationMode == FIX) {
         Serial.println("Fix starting...");
         operationMode = PID;
-        Omni.PIDEnable(0.26, 100.0, 10.0, 10);  // パラメータをガチャガチャいじるといつか治る
+        Omni.PIDEnable(0.26, 100.0, 10.0, 10);  // パラメータをガチャガチャいじるといつか治る。一晩おくとなお良い
         delay(10);
         Omni.setCarAdvance(300);
         delay(1000);

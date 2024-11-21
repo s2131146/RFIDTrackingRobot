@@ -301,16 +301,12 @@ class Obstacles:
             return False
 
         x1, _, x2, _ = target_bbox
-        target_width = x2 - x1
-        frame_width = self.frame_width
 
-        # バウンディングボックスのX座標が中央領域に重なり、かつ横幅が画面50%以上かをチェック
         in_center_area = not (
             x2 // 2 < self.central_start or x1 // 2 > self.central_end
         )
-        wide_enough = (target_width / frame_width) >= 0.5
 
-        return in_center_area and wide_enough
+        return in_center_area
 
     def determine_wall_position(
         self,

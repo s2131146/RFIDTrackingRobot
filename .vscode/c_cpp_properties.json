@@ -16,15 +16,7 @@
             ],
             "intelliSenseMode": "gcc-x64",
             "includePath": [
-                "C:\\Users\\metow\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\cores\\arduino",
-                "C:\\Users\\metow\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\variants\\standard",
-                "C:\\Users\\metow\\Documents\\Arduino\\libraries\\MotorWheel",
-                "C:\\Users\\metow\\Documents\\Arduino\\libraries\\PID_Beta6",
-                "C:\\Users\\metow\\Documents\\Arduino\\libraries\\PinChangeInt",
-                "C:\\Users\\metow\\Documents\\Arduino\\libraries\\SONAR",
-                "c:\\users\\metow\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include",
-                "c:\\users\\metow\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include-fixed",
-                "c:\\users\\metow\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\avr\\include"
+                "C:\\Users\\admin\\Desktop\\RFIDTrackingRobot"
             ],
             "forcedInclude": [
                 "C:\\Users\\metow\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\cores\\arduino\\Arduino.h"

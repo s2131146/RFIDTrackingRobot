@@ -1,7 +1,7 @@
 import os
 import subprocess
 import traceback
-from typing import Tuple
+from typing import Optional, Tuple
 
 import psutil
 
@@ -116,7 +116,7 @@ class Tracker:
         # 障害物検出クラスのインスタンス作成
         self.obstacles = Obstacles(FRAME_WIDTH, FRAME_HEIGHT, logger)
 
-        from target_processor import TargetProcessor
+        from target_processor import TargetProcessor, Target
 
         # 対象検出クラスのインスタンス作成
         self.target_processor = TargetProcessor(
@@ -128,6 +128,7 @@ class Tracker:
         self.occupancy_ratio = 0
         self.is_close = False
 
+        self.target: Optional[Target] = None
         self.last_target_direction = (
             None  # ターゲットが最後にいた方向 ('LEFT' または 'RIGHT')
         )
@@ -384,6 +385,10 @@ class Tracker:
         # ほぼ平行
         if is_fix_pos:
             low_motor = base_power * 0.6
+
+        # 対象がいるなら、その方向へ進む
+        if self.target_position != Position.NONE:
+            wall_direction = Position.invert(self.target_position)
 
         if wall_direction == Position.LEFT and (
             is_fix_pos or self.motor_power_r > low_motor
@@ -670,6 +675,10 @@ class Tracker:
 
         # ターゲット検出の処理
         detected_targets = self._detect_and_select_targets(current_time)
+        if len(detected_targets) > 0:
+            self.target = detected_targets[0]
+        else:
+            self.target = None
 
         if (
             len(detected_targets) > 0
@@ -992,12 +1001,18 @@ class Tracker:
         if self.rfid_reader:
             rfid_power = self.rfid_reader.signal_strength
 
+        center = (
+            self.obstacles.is_target_in_center_area(self.target.bboxes)
+            if self.target
+            else False
+        )
+
         debug_text = (
             f"{self.seg} {math.floor(self.frame_width)} x {math.floor(self.frame_height)} "
             f"{'O' if self.target_position != 'X' else 'X'} x: {self.d_x} y: {self.d_y} "
             f"avr_fps: {math.floor(self.avr_fps)} fps: {math.floor(self.fps)} "
             f"target_position: {self.target_position}\n"
-            f"target_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr}\n"
+            f"target_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr} in_center: {center}\n"
             f"connected: {self.serial.ser_connected} port: {SERIAL_PORT} baud: {SERIAL_BAUD} data: {self.serial.serial_sent}\n"
             f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
             f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
