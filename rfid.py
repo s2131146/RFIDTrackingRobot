@@ -61,8 +61,7 @@ class RFIDReader:
             self.no_reader = True
 
     def setup_command(self):
-        self.set_signal_strength(27)  # アンテナの電波強度設定
-        time.sleep(0.3)
+        self.set_signal_strength(self.signal_strength)  # アンテナの電波強度設定
         r1 = self.send_command("J000")  # Region設定
         r2 = self.send_command("N5,05")  # EU 865~868
 
@@ -75,6 +74,7 @@ class RFIDReader:
             command = f"N1,{command_value}"
             self.send_command(command)
             self.signal_strength = strength
+            time.sleep(0.3)
             logger.logger.info("Set RFID Antennas signal strengh to %d", strength)
 
     def adjust_signal_strength(self):
@@ -88,7 +88,7 @@ class RFIDReader:
 
         # 条件に基づいて目標電波強度を設定
         if max_detection == 0:
-            target_strength = 27
+            target_strength = 40
         elif (
             self.detection_counts_sec[RFIDAntenna.CENTER.value] > 1
             and self.detection_counts_sec[RFIDAntenna.REAR.value] > 1
@@ -173,6 +173,9 @@ class RFIDReader:
         right = counts.get(RFIDAntenna.RIGHT.value, 0)
         center = counts.get(RFIDAntenna.CENTER.value, 0)
 
+        if not (max(left, right, center) == 0 and rear > 1):
+            rear = 0
+
         # 検出回数が3以上のアンテナをリストアップ
         antennas_with_ge1 = [ant for ant, cnt in counts.items() if cnt >= 1]
         total_ge1 = len(antennas_with_ge1)
@@ -188,8 +191,6 @@ class RFIDReader:
 
         if self.rear_detection_streak >= 2:
             return Commands.ROTATE_LEFT
-
-        rear = 0
 
         # 5. 3つ以上のアンテナが1回以上検出された場合
         if total_ge1 >= 3:
