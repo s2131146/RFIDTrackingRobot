@@ -53,7 +53,7 @@ int DEFAULT_SPEED = 300;
 
 int currentSpeed = DEFAULT_SPEED;
 
-const int TIME_APPLY_SPEED = 1500;
+const int TIME_APPLY_SPEED = 2500;
 
 namespace RFIDTR {
     // 前回実行したコマンド
