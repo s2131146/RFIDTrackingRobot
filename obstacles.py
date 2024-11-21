@@ -221,6 +221,18 @@ class Obstacles:
             self.wall_parallel_history.clear()
             self.last_detection_time = current_time
 
+        if most_common_avoid_wall:
+            left_coverge = (
+                np.sum(wall_mask[:, : self.left_center_start])
+                / wall_mask[:, : self.left_center_start].size
+            )
+            right_coverge = (
+                np.sum(wall_mask[:, self.right_center_end :])
+                / wall_mask[:, self.right_center_end :].size
+            )
+            if left_coverge < 0.5 and right_coverge < 0.5:
+                most_common_avoid_wall = False
+
         # 障害物と床を可視化（障害物は赤色、床は青色で塗りつぶし）
         obstacle_visual = self.visualize_obstacle(
             depth_image,

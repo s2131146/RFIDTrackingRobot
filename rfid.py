@@ -4,7 +4,7 @@ import serial
 import time
 import re
 import logger
-from constants import Commands
+from constants import Commands, Position
 
 
 class RFIDAntenna(Enum):
@@ -176,8 +176,8 @@ class RFIDReader:
         if not (max(left, right, center) == 0 and rear > 1):
             rear = 0
 
-        # 検出回数が3以上のアンテナをリストアップ
-        antennas_with_ge1 = [ant for ant, cnt in counts.items() if cnt >= 1]
+        # 検出回数が2以上のアンテナをリストアップ
+        antennas_with_ge1 = [ant for ant, cnt in counts.items() if cnt >= 2]
         total_ge1 = len(antennas_with_ge1)
 
         # 各アンテナの最大検出回数とそれを持つアンテナ
@@ -192,9 +192,9 @@ class RFIDReader:
         if self.rear_detection_streak >= 2:
             return Commands.ROTATE_LEFT
 
-        # 5. 3つ以上のアンテナが1回以上検出された場合
+        # 5. 3つ以上のアンテナで検出された場合
         if total_ge1 >= 3:
-            return Commands.STOP_TEMP
+            return self.last_direction
 
         # 1. すべてのアンテナが0の場合
         if rear == 0 and left == 0 and right == 0 and center == 0:
@@ -209,21 +209,10 @@ class RFIDReader:
 
         # 3. CENTER、REARとLEFT、RIGHTの検出回数が同じ場合
         if center == rear and left == right and center > 0 and left > 0:
-            return Commands.STOP_TEMP
+            return self.last_direction
 
-        # 4. LEFTとRIGHTの検出回数が異なる場合、検出回数が多い方の方向に設定
-        if left != right and center <= 1:
-            if left > right:
-                return Commands.GO_LEFT
-            else:
-                return Commands.GO_RIGHT
-
-        if center >= 3 and rear >= 3:
-            if center > rear:
-                return Commands.GO_CENTER
-            else:
-                return Commands.ROTATE_LEFT
-        elif left >= 3 and right >= 3:
+        # 斜めの場合
+        if center > 0 and (left > 1 or right > 1):
             if left > right:
                 return Commands.GO_LEFT
             else:
@@ -233,7 +222,7 @@ class RFIDReader:
         if max_count > 0:
             antenna = antennas_with_max[0]
             direction = ANTENNA_MAPS[antenna]
-            return self.direction_to_command(direction)
+            return Position.convert_to_rotate(self.direction_to_command(direction))
 
         return Commands.STOP_TEMP
 
@@ -355,7 +344,7 @@ class RFIDReader:
     def get_direction(self):
         """現在の進行方向を取得します。"""
         with self.lock:
-            return Commands.convert_to_rotate(self.predict_direction)
+            return self.predict_direction
 
     def close(self):
         """RFIDリーディングを停止し、シリアルポートを閉じます。"""

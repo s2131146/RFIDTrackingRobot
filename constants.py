@@ -19,9 +19,9 @@ class Position:
 
     @classmethod
     def convert_to_rotate(cls, pos):
-        if pos == cls.LEFT:
+        if pos == cls.LEFT or pos == Commands.GO_LEFT:
             return Commands.ROTATE_LEFT
-        if pos == cls.RIGHT:
+        if pos == cls.RIGHT or pos == Commands.GO_RIGHT:
             return Commands.ROTATE_RIGHT
         if pos == cls.CENTER:
             return Commands.STOP_TEMP
@@ -51,15 +51,12 @@ class Commands:
     DISCONNECT: ClassVar[str] = "DC"
     DEBUG_PID_INIT: ClassVar[str] = "PID"
 
-    IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK}
+    LIST_IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK}
+    LIST_ROTATE: ClassVar[Set[str]] = {ROTATE_RIGHT, ROTATE_LEFT}
 
     @classmethod
-    def convert_to_rotate(cls, go):
-        if go == cls.GO_LEFT:
-            return cls.ROTATE_LEFT
-        if go == cls.GO_RIGHT:
-            return cls.ROTATE_RIGHT
-        return go
+    def is_rotate(cls, cmd: str) -> bool:
+        return cmd in cls.LIST_ROTATE
 
     @classmethod
     def is_ignore(cls, cmd: str) -> bool:
@@ -72,7 +69,7 @@ class Commands:
         Returns:
             bool: コマンドが無視リストに含まれていればTrue、そうでなければFalse。
         """
-        return cmd in cls.IGNORE_LOG
+        return cmd in cls.LIST_IGNORE_LOG
 
     @classmethod
     def contains(cls, key):

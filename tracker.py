@@ -548,7 +548,7 @@ class Tracker:
         self.motor_power_l = int(self.motor_power_l)
         self.motor_power_r = int(self.motor_power_r)
 
-        # RFIDモードでのターゲット方向送信 (RFID_ONLY)
+        # RFIDモードでのモーター出力変更 (RFID_ONLY)
         self._send_target_position_if_rfid_mode()
 
         # 速度変更がある場合の処理
@@ -646,6 +646,11 @@ class Tracker:
                 )
 
     def apply_rfid_direction(self, multi_targets=False):
+        """RFID情報を反映（DUAL_MODE）
+
+        Args:
+            multi_targets (bool, optional): 複数人検出された場合. Defaults to False.
+        """
         if not self.gui.var_enable_tracking.get():
             return
         self.rfid_accessing = True
@@ -698,7 +703,6 @@ class Tracker:
             self.frame, self.RFID_ONLY_MODE, self.RFID_ENABLED
         )
         self.rfid_accessing = False
-        self.stop_exec_cmd = False
         self.tracking_target_invisible = False
 
         selected_target = None
@@ -715,6 +719,8 @@ class Tracker:
                     self.stop_exec_cmd = False
             else:
                 self._handle_no_targets(current_time)
+        elif not Commands.is_rotate(self.rfid_reader.get_direction()):
+            self.stop_exec_cmd = False
 
         return [selected_target] if selected_target else []
 
@@ -911,11 +917,26 @@ class Tracker:
     def _send_target_position_if_rfid_mode(self):
         """RFIDモード時にターゲット方向を送信"""
         if self.RFID_ONLY_MODE and self.RFID_ENABLED:
+            max_power = 100
+            min_power = 0
             self.target_position = self.rfid_reader.get_direction()
-            if not self.stop and self.gui.var_enable_tracking.get():
-                if self._prev_send_rfid_command != self.target_position:
-                    self.send(self.target_position)
-                    self._prev_send_rfid_command = self.target_position
+            self.motor_power_l = max_power
+            self.motor_power_l = max_power
+            if (
+                self._prev_send_rfid_command == Commands.STOP_TEMP
+                and self.target_position == Commands.STOP_TEMP
+            ):
+                return
+            self._prev_send_rfid_command = self.target_position
+            if self.target_position == Commands.GO_LEFT:
+                self.motor_power_l = min_power
+            elif self.target_position == Commands.GO_RIGHT:
+                self.motor_power_r = min_power
+            elif self.target_position == Commands.STOP_TEMP:
+                self.send(Commands.STOP_TEMP)
+            elif Commands.is_rotate(self.target_position):
+                self.stop_exec_cmd = True
+                self.send(self.target_position)
 
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
