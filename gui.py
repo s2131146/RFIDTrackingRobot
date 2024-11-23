@@ -1,19 +1,21 @@
+import os
 import re
 import subprocess
-import os
 import threading
 import time
-from tkinter import font
+import dxcam
 import cv2
 import numpy as np
-from constants import Commands, Position
-import rfid
-import tqueue
 import tkinter as tk
-import tracker
-from tkinter import ttk
-from tkinter import scrolledtext as st
+
+from datetime import datetime
+from tkinter import scrolledtext as st, ttk, font
 from PIL import Image, ImageTk
+from constants import Commands, Position
+
+import tracker
+import tqueue
+import rfid
 
 DEF_MARGIN = 12
 STICKY_UP = "n"
@@ -29,7 +31,6 @@ CONTROL_ROTATE_RIGHT = "rr"
 CONTROL_ROTATE_LEFT = "lr"
 
 AVI_NAME = "tracker.avi"
-MP4_NAME = "tracker.mp4"
 
 TIMER_ACTIVE = 0
 TIMER_START = 1
@@ -44,6 +45,7 @@ class GUI:
         self.destroy = False
         self.tracker = _tracker
         self.root = root
+        self.root.resizable(False, False)
         self.root.title("Metoki - RFID Tracking Robot")
         self.root.bind("<KeyPress>", self.key_pressed)
         self.root.bind("<Button-1>", self.on_click)
@@ -74,8 +76,6 @@ class GUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        self.start_recording()
-
         self.queue.add("init")
 
     def start_recording(self):
@@ -89,53 +89,62 @@ class GUI:
         self.recording = False
         if self.recording_thread is not None:
             self.recording_thread.join()
-            self.__del__()
             threading.Thread(target=self.start_conversion, daemon=True).start()
 
     def on_closing(self):
-        self.stop_recording()
+        self.__del__()
+        if self.recording:
+            self.stop_recording()
 
     def record_screen(self):
-        import mss
-
-        # ウィンドウの更新を待つ
-        time.sleep(1)
-        # 画面のサイズを取得
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
 
-        # 解像度を0.75倍に設定
-        scale_factor = 1
-        width = int(screen_width * scale_factor)
-        height = int(screen_height * scale_factor)
-
-        # FourCCコードを'MJPG'に設定し、ファイル拡張子を'.avi'に
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
         out_filename = AVI_NAME
-        out = cv2.VideoWriter(out_filename, fourcc, 10.0, (width, height))
+        out = cv2.VideoWriter(out_filename, fourcc, 30.0, (width, height))
 
-        sct = mss.mss()
-        monitor = {"top": 0, "left": 0, "width": screen_width, "height": screen_height}
-
-        # 目標のフレーム間隔（秒）
-        target_frame_interval = 1.0 / 10.0
+        cam = dxcam.create(output_color="BGR")
+        target_frame_interval = 1.0 / 30.0
+        frame_count = 0
+        last_frame = None
+        start_time = time.time()
 
         while self.recording:
-            # フレームのキャプチャ開始時間
             frame_start_time = time.time()
 
+            x1 = max(0, self.root.winfo_rootx())
+            y1 = max(0, self.root.winfo_rooty())
+            x2 = x1 + width
+            y2 = y1 + height
+
+            if x2 > screen_width:
+                x2 = screen_width
+            if y2 > screen_height:
+                y2 = screen_height
+
+            # キャプチャ範囲を設定
+            monitor = (x1, y1, x2, y2)
+
             # 画面全体をキャプチャ
-            sct_img = sct.grab(monitor)
-            img = np.array(sct_img)
+            sct_img = cam.grab(region=monitor)
+            if sct_img is not None:
+                img = np.array(sct_img, dtype=np.uint8)
+                frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                last_frame = frame
+            else:
+                frame = last_frame
 
-            # 解像度を0.75倍にリサイズ
-            frame = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
-            # BGRに変換（mssはBGRAで取得するので、3チャンネルにする）
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            elapsed_time = time.time() - start_time
+            expected_frame_count = int(elapsed_time / target_frame_interval)
 
-            out.write(frame)
+            # 不足しているフレームを埋め込む
+            while frame_count < expected_frame_count:
+                out.write(frame)
+                frame_count += 1
 
-            # 処理時間を考慮して待機
             elapsed_time = time.time() - frame_start_time
             sleep_time = max(0, target_frame_interval - elapsed_time)
             time.sleep(sleep_time)
@@ -181,6 +190,8 @@ class GUI:
 
     def compress_and_convert_to_mp4(self, frames: int):
         """AVI形式のファイルをMP4形式に変換し、圧縮します。"""
+        if not os.path.exists("./records"):
+            os.makedirs("./records")
         command = [
             "C:/Users/admin/Downloads/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
             "-i",
@@ -192,7 +203,7 @@ class GUI:
             "-crf",
             "28",
             "-y",
-            MP4_NAME,  # 上書き許可
+            f"records/RFIDTR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4",
         ]
 
         self.show_progress_dialog()
@@ -218,7 +229,8 @@ class GUI:
         if os.path.exists(AVI_NAME):
             os.remove(AVI_NAME)
 
-        self.root.destroy()
+        if self.destroy:
+            self.root.destroy()
 
     def create_main_frame(self):
         self.main_frame = tk.Frame(self.root)
@@ -548,30 +560,49 @@ class GUI:
             sticky=STICKY_UP,
         )
 
-        # RESETボタンを矢印操作ボタンの上に配置
+        # ターゲット変更ボタン
         self.reset_button = tk.Button(
             self.button_panel_frame,
             text="Change Target",
             font=self.bold_font,
             bg="gray",
             fg="white",
-            borderwidth=4,  # ボタンの境界線幅を増加
-            relief="solid",  # 境界線を実線に設定
-            highlightbackground="black",  # ハイライト背景色を黒に設定
-            highlightcolor="black",  # ハイライト色を黒に設定
-            highlightthickness=2,  # ハイライトの厚さを設定
+            borderwidth=4,
+            relief="solid",
+            highlightbackground="black",
+            highlightcolor="black",
+            highlightthickness=2,
             command=self.reset_button_clicked,
         )
         self.reset_button.grid(
             row=10, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
         )
 
+        # 録画（実験）開始ボタン
+        self.rec_button = tk.Button(
+            self.button_panel_frame,
+            text="RECORD",
+            font=self.bold_font,
+            bg="white",
+            fg="green",
+            borderwidth=4,
+            relief="solid",
+            highlightbackground="red",
+            highlightcolor="red",
+            highlightthickness=2,
+            command=self.record_button_clicked,
+        )
+        self.rec_button.grid(
+            row=11, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
+        )
+
+        # ロボット強制リセットボタン
         self.reset_button = tk.Button(
             self.button_panel_frame,
             text="RESET ROBOT",
             font=self.bold_font,
             bg="red",
-            fg="white",
+            fg="yellow",
             borderwidth=4,  # ボタンの境界線幅を増加
             relief="solid",  # 境界線を実線に設定
             highlightbackground="black",  # ハイライト背景色を黒に設定
@@ -580,7 +611,7 @@ class GUI:
             command=self.detach_button_clicked,
         )
         self.reset_button.grid(
-            row=11, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
+            row=12, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
         )
 
         # グリッドを設定して十字型にボタンを配置
@@ -1039,6 +1070,17 @@ class GUI:
         self.tracker.send(Commands.DETACH_MOTOR)
         self.update_status("Reset Arduino.")
 
+    def record_button_clicked(self):
+        if not self.recording:
+            self.rec_button.config(text="STOP REC", fg="red")
+            self.start_recording()
+        else:
+            self.tracker.stop_motor()
+            self.stop_recording()
+            self.rec_button.config(text="RECORD", fg="green")
+
+        self.update_status(f"Recording: {self.recording}")
+
     def reset_button_clicked(self):
         """RESETボタンがクリックされたときの処理"""
         self.tracker.target_processor.reset_target()
@@ -1110,3 +1152,5 @@ class GUI:
     def __del__(self):
         self.destroy = True
         self.tracker.close()
+        if not self.recording:
+            self.root.destroy()

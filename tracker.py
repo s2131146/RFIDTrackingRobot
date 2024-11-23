@@ -190,6 +190,25 @@ class Tracker:
             self.RFID_ENABLED = True
             self.default_speed = 100
 
+    def draw_red_border(self, thickness=5):
+        """
+        フレームの周りに赤い枠を描画する関数。
+
+        Args:
+            thickness (int): 枠線の太さ。
+        """
+        # 画像の高さと幅を取得
+        height, width, _ = self.frame.shape
+
+        cv2.line(self.frame, (0, 0), (width, 0), (0, 0, 255), thickness)
+        cv2.line(
+            self.frame, (0, height - 1), (width, height - 1), (0, 0, 255), thickness
+        )
+        cv2.line(self.frame, (0, 0), (0, height), (0, 0, 255), thickness)
+        cv2.line(
+            self.frame, (width - 1, 0), (width - 1, height), (0, 0, 255), thickness
+        )
+
     def elapsed_str(self, start_time):
         """経過時間の文字列を取得
 
@@ -582,6 +601,8 @@ class Tracker:
             self.receive_serial_data()
             self.update_fps(frame_start_time)
             self.handle_disconnection()
+            if self.gui.recording:
+                self.draw_red_border()
             self.update_debug_info()
             self.update_gui()
 
