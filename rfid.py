@@ -96,13 +96,13 @@ class RFIDReader:
             self.detection_counts_sec[RFIDAntenna.LEFT.value] > 1
             and self.detection_counts_sec[RFIDAntenna.RIGHT.value] > 1
         ):
-            target_strength = self.signal_strength - 2  # 強度を下げる
+            target_strength = self.signal_strength - 4  # 強度を下げる
         elif max_detection >= 4 and num_with_4_or_more <= 2:
             target_strength = self.signal_strength  # 強度を変えない
         elif max_detection >= 4 and num_with_4_or_more > 2:
-            target_strength = self.signal_strength - 2  # 強度を下げる
+            target_strength = self.signal_strength - 4  # 強度を下げる
         elif max_detection <= 3:
-            target_strength = self.signal_strength + 3  # 強度を上げる
+            target_strength = self.signal_strength + 6  # 強度を上げる
         else:
             target_strength = self.signal_strength  # 何もしない
 

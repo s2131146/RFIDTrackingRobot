@@ -1,13 +1,6 @@
-import threading
-
-
-class Empty(Exception):
-    """キューが空であることを示す例外"""
-
-    pass
-
-
 class TQueue:
+    """独自のキュー（Queueがなんか動かなかったため）"""
+
     queue: list = []
 
     def add(self, id, queue=""):
@@ -61,7 +54,7 @@ class TQueue:
 
     def wait_for(self, id):
         while not self.has(id):
-            pass
+            continue
         self.get(id)
 
     def empty(self):
@@ -69,5 +62,5 @@ class TQueue:
 
     def get_nowait(self):
         if self.empty():
-            raise Empty
+            return None
         return self.queue.pop(0)

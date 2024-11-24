@@ -12,10 +12,17 @@ import pyrealsense2 as rs
 from utils import Utils
 from constants import Commands
 
+# 別PCをロボットと接続し、無線通信を行うか（映像が１フレームしか来ないバグあり）
+WIRELESS_MODE = False
+
 logger = l.logger
 
 
 class TrackerSocket:
+    """
+    シリアル通信とソケット通信を管理するクラス
+    """
+
     serial_sent = None
     command_sent = ""
     queue = tqueue.TQueue()
@@ -23,6 +30,17 @@ class TrackerSocket:
     pipeline = None
 
     def __init__(self, p, b, i, d, port, webcam):
+        """
+        TrackerSocketクラスの初期化
+
+        Args:
+            p (str): シリアルポート
+            b (int): ボーレート
+            i (float): インターバル
+            d (bool): デバッグフラグ
+            port (int): ソケットポート番号
+            webcam (bool): ウェブカメラの使用フラグ
+        """
         self.ser_port = p
         self.baud = b
         self.interval = i
@@ -48,21 +66,32 @@ class TrackerSocket:
             try:
                 self.pipeline.start(config)
             except RuntimeError:
-                logger.info("No RealSense connected.")
+                self.pipeline = None
+                logger.info("No RealSense connected")
 
     @classmethod
     def get_local_ip(cls):
+        """
+        ローカルIPアドレスを取得
+
+        Returns:
+            str: ローカルIPアドレス
+        """
         try:
             hostname = socket.gethostname()
             ip_address = socket.gethostbyname(hostname)
             return ip_address
         except socket.error as e:
-            logger.error(
-                "[Socket] An error occured during getting local IP: {}".format(e)
-            )
+            logger.error(f"[Socket] An error occurred during getting local IP: {e}")
             return None
 
     def test_connect(self):
+        """
+        ソケット接続をテスト
+
+        Returns:
+            bool: 接続成功の場合True、失敗の場合False
+        """
         if not self.active_loop or self.disconnecting:
             return False
         try:
@@ -77,13 +106,14 @@ class TrackerSocket:
     ser_connected = False
 
     async def connect_socket(self):
-        """シリアル通信を開始
+        """
+        ソケット通信を開始
 
         Returns:
             bool: 接続結果
         """
         if self.tcp_ip is None:
-            logger.error("[Socket] IP Address is not defined.")
+            logger.error("[Socket] IP Address is not defined")
             self.ser_connected = False
             return
         try:
@@ -96,10 +126,10 @@ class TrackerSocket:
             )
             self.disconnecting = False
             self.ser_connected = True
-            logger.info("[Socket] Socket connected.")
+            logger.info("[Socket] Socket connected")
             self.send_startup()
         except socket.error as e:
-            logger.error("[Socket] An error occured at connect_socket: {}".format(e))
+            logger.error(f"[Socket] An error occurred at connect_socket: {e}")
             self.ser_connected = False
 
             import tracker
@@ -108,6 +138,12 @@ class TrackerSocket:
         return self.ser_connected
 
     async def receive_data(self):
+        """
+        データを非同期で受信
+
+        Returns:
+            bytes: 受信したデータ
+        """
         data_buffer = b""
         while True:
             chunk = await asyncio.get_event_loop().sock_recv(self.client_socket, 8192)
@@ -123,10 +159,18 @@ class TrackerSocket:
         return None
 
     def process_data(self, data):
-        """header = data.decode("ISO-8859-1")[:5]
-        if header == "color" or header == "depth":
-            self.make_images(header, data[5:])
-            return"""
+        """
+        受信データを処理
+
+        Args:
+            data (bytes): 受信データ
+        """
+
+        if WIRELESS_MODE:
+            header = data.decode("ISO-8859-1")[:5]
+            if header == "color" or header == "depth":
+                self.make_images(header, data[5:])
+                return
 
         if self.pipeline is not None:
             frames = self.pipeline.wait_for_frames()
@@ -140,6 +184,12 @@ class TrackerSocket:
         self.exec_data(data)
 
     def exec_data(self, data):
+        """
+        データを解析して実行
+
+        Args:
+            data (bytes): デコードされたデータ
+        """
         data = data.decode()
         parts = data.split(":", 2)
         cmd = parts[0]
@@ -153,10 +203,13 @@ class TrackerSocket:
                 logger.info(value)
             if cmd == "logger.info":
                 self.logger.info_serial(value)
-            if cid != -1 and self.queue.get("w:{}".format(cid)) is not None:
+            if cid != -1 and self.queue.get(f"w:{cid}") is not None:
                 self.queue.add(cid, value_bool)
 
     async def loop_serial(self):
+        """
+        データ受信用ループ
+        """
         self.active_loop = True
 
         while self.active_loop:
@@ -173,9 +226,7 @@ class TrackerSocket:
                 return
             except Exception:
                 logger.error(
-                    "[Socket] An error occured at loop_serial: {}".format(
-                        traceback.format_exc()
-                    )
+                    f"[Socket] An error occurred at loop_serial: {traceback.format_exc()}"
                 )
 
     def send_startup(self):
@@ -186,10 +237,20 @@ class TrackerSocket:
         )
 
     def wait_for_result(self, data, id):
+        """
+        結果を待機
+
+        Args:
+            data (str): 送信データ
+            id (int): データID
+
+        Returns:
+            any: 取得した結果
+        """
         if not self.ser_connected:
-            logger.error("[Socket] Not connected. Cannot start loop_serial.")
+            logger.error("[Socket] Not connected. Cannot start loop_serial")
             return
-        fid = "w:{}".format(id)
+        fid = f"w:{id}"
         self.queue.add(fid)
         self.send_data(data)
         s = time.time()
@@ -200,12 +261,13 @@ class TrackerSocket:
         return self.queue.get(fid)
 
     def send_serial(self, data) -> bool:
-        """シリアル通信でコマンドを送信
+        """
+        シリアル通信でコマンドを送信
 
         Args:
-            data (str|tuple): 送信データ (コマンド|(コマンド, 値))
+            data (str|tuple): 送信データ (コマンド or (コマンド, 値))
 
-        Return:
+        Returns:
             bool: 送信結果
         """
         if not self.ser_connected:
@@ -250,6 +312,15 @@ class TrackerSocket:
             return False
 
     def get_command(self, data):
+        """
+        コマンドを取得
+
+        Args:
+            data (str|tuple): コマンドデータ
+
+        Returns:
+            str: コマンド文字列
+        """
         if isinstance(data, tuple):
             data = data[0].split(":")[0].upper()
         else:
@@ -282,9 +353,14 @@ class TrackerSocket:
         return self.queue.get_all("r")
 
     def print_serial(self, received):
-        """Arduinoからのシリアル通信の内容を出力"""
+        """
+        Arduinoからのシリアル通信の内容を出力
+
+        Args:
+            received (str): 受信したデータ
+        """
         if self.debug:
-            logger.info("[Serial] {}".format(received))
+            logger.info(f"[Serial] {received}")
 
     color_image, depth_image = (
         np.ones((480, 640, 3), dtype=np.uint8) * 255,
@@ -292,12 +368,19 @@ class TrackerSocket:
     )
 
     def make_images(self, header, data):
+        """
+        画像データを受信データから生成
+
+        Args:
+            header (str): データのヘッダー情報
+            data (bytes): バイナリデータ
+        """
         if (
             not hasattr(self, "client_socket")
             or self.client_socket is None
             or not self.ser_connected
         ):
-            logger.error("[Socket] client_socket is not initialized.")
+            logger.error("[Socket] client_socket is not initialized")
             return
 
         try:

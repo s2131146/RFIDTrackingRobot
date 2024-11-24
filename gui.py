@@ -50,19 +50,16 @@ class GUI:
         self.root.bind("<KeyPress>", self.key_pressed)
         self.root.bind("<Button-1>", self.on_click)
 
-        self.custom_font = font.Font(family="Consolas", size=10)
-        self.bold_font = font.Font(family="Verdana Bold", size=18, weight="bold")
+        self.default_font = font.Font(family="Consolas", size=10)
+        self.button_font = font.Font(family="Verdana Bold", size=18, weight="bold")
 
-        # モーター速度表示用のStringVarを初期化
         self.motor_left_var = tk.StringVar(value="0%")
         self.motor_right_var = tk.StringVar(value="0%")
-
-        # モード選択用のStringVarを初期化
         self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.RFID_ONLY.name)
-
-        # 自動スクロールの変数を初期化
         self.var_auto_scroll_received = tk.IntVar(value=1)
         self.var_auto_scroll_sent = tk.IntVar(value=1)
+
+        self.init_timer()
 
         self.create_main_frame()
         self.create_control_frame()
@@ -175,7 +172,6 @@ class GUI:
     def start_conversion(self):
         frames = self.get_total_frames(AVI_NAME)
         if frames is None:
-            print("フレーム数の取得に失敗しました")
             return
         self.compress_and_convert_to_mp4(frames)
 
@@ -317,7 +313,7 @@ class GUI:
             self.rfid_rect_ids.append(rect_id)
 
             text_id = canvas.create_text(
-                25, 25, text=self.rfid_values[i].get(), font=self.custom_font
+                25, 25, text=self.rfid_values[i].get(), font=self.default_font
             )
             self.rfid_text_ids.append(text_id)
 
@@ -328,7 +324,7 @@ class GUI:
             self.rfid_canvases.append(canvas)
 
             label = tk.Label(
-                self.rfid_frame, text=rfid_labels[i], font=self.custom_font
+                self.rfid_frame, text=rfid_labels[i], font=self.default_font
             )
             label.grid(row=1, column=i, padx=0, pady=(0, 0), sticky=STICKY_CENTER)
 
@@ -370,7 +366,7 @@ class GUI:
             self.motor_rect_ids.append(rect_id)
 
             text_id = canvas.create_text(
-                25, 25, text=self.motor_values[i].get(), font=self.custom_font
+                25, 25, text=self.motor_values[i].get(), font=self.default_font
             )
             self.motor_text_ids.append(text_id)
 
@@ -381,7 +377,7 @@ class GUI:
             self.motor_canvases.append(canvas)
 
             label = tk.Label(
-                self.motor_frame, text=motor_labels[i], font=self.custom_font
+                self.motor_frame, text=motor_labels[i], font=self.default_font
             )
             label.grid(
                 row=1, column=i, padx=20, pady=(5, DEF_MARGIN), sticky=STICKY_CENTER
@@ -487,8 +483,10 @@ class GUI:
 
     start_time = time.time()
     last_update_time_tracking = time.time()
-    elapsed_start = 0.0
-    elapsed_tracking = 0.0
+
+    def init_timer(self):
+        self.elapsed_start = 0.0
+        self.elapsed_tracking = 0.0
 
     def formatted_time(self, id: int):
         label = ""
@@ -519,15 +517,19 @@ class GUI:
         """some_conditionがTrueのときのみタイマーを加算する"""
         if not self.destroy:
             current_time = time.time()
+            enable_tracking = self.var_enable_tracking.get() and not self.tracker.stop
             # START
-            if self.var_enable_tracking.get():
+            if enable_tracking:
                 self.elapsed_start += current_time - self.last_update_time_start
                 self.last_update_time_start = current_time
             else:
                 self.last_update_time_start = time.time()
 
             # TRACKING
-            if self.tracker.target_position != Position.NONE:
+            if enable_tracking and self.tracker.target_position not in (
+                Position.NONE,
+                Commands.STOP_TEMP,
+            ):
                 self.elapsed_tracking += current_time - self.last_update_time_tracking
                 self.last_update_time_tracking = current_time
             else:
@@ -564,7 +566,7 @@ class GUI:
         self.reset_button = tk.Button(
             self.button_panel_frame,
             text="Change Target",
-            font=self.bold_font,
+            font=self.button_font,
             bg="gray",
             fg="white",
             borderwidth=4,
@@ -582,7 +584,7 @@ class GUI:
         self.rec_button = tk.Button(
             self.button_panel_frame,
             text="RECORD",
-            font=self.bold_font,
+            font=self.button_font,
             bg="white",
             fg="green",
             borderwidth=4,
@@ -600,7 +602,7 @@ class GUI:
         self.reset_button = tk.Button(
             self.button_panel_frame,
             text="RESET ROBOT",
-            font=self.bold_font,
+            font=self.button_font,
             bg="red",
             fg="yellow",
             borderwidth=4,  # ボタンの境界線幅を増加
@@ -884,7 +886,7 @@ class GUI:
             text="Initialized.",
             anchor="w",
             justify="left",
-            font=self.custom_font,
+            font=self.default_font,
         )
         self.label_received.grid(
             row=3, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT
@@ -898,7 +900,7 @@ class GUI:
             text="",
             anchor="w",
             justify="left",
-            font=self.custom_font,
+            font=self.default_font,
         )
         self.label_sent.grid(
             row=7, column=0, padx=DEF_MARGIN, pady=5, sticky=STICKY_LEFT
@@ -906,7 +908,7 @@ class GUI:
 
     def create_scrolled_widget(self, frame, label_text, var_auto_scroll, row):
         scrolled_widget = st.ScrolledText(
-            frame, wrap=tk.WORD, width=40, height=10, font=self.custom_font
+            frame, wrap=tk.WORD, width=40, height=10, font=self.default_font
         )
         scrolled_widget.grid(row=row, column=0, padx=0, pady=(5, 0))
         auto_scroll_checkbox = tk.Checkbutton(
@@ -928,13 +930,13 @@ class GUI:
         self.label_status = tk.Label(
             self.status_frame,
             text="Ready",
-            font=self.custom_font,
+            font=self.default_font,
             anchor="w",
             justify="left",
         )
         self.label_status.grid(row=0, column=0, padx=0, pady=0, sticky=STICKY_LEFT)
 
-        self.label_seg = tk.Label(self.status_frame, text="0", font=self.custom_font)
+        self.label_seg = tk.Label(self.status_frame, text="0", font=self.default_font)
         self.label_seg.grid(row=0, column=1, padx=0, pady=0, sticky=STICKY_RIGHT)
 
     def on_click(self, e):
@@ -983,7 +985,7 @@ class GUI:
         self.stop_button = tk.Button(
             self.control_frame,
             text=text,
-            font=self.bold_font,
+            font=self.button_font,
             borderwidth=2,
             bg=bg_color,
             fg=fg_color,
@@ -1073,6 +1075,7 @@ class GUI:
     def record_button_clicked(self):
         if not self.recording:
             self.rec_button.config(text="STOP REC", fg="red")
+            self.init_timer()
             self.start_recording()
         else:
             self.tracker.stop_motor()

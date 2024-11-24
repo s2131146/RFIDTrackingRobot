@@ -5,8 +5,6 @@ from constants import Commands, Position
 import time
 from typing import List, Tuple, Optional
 
-import tracker
-
 
 class Target:
     """ターゲットオブジェクトのクラス"""
@@ -36,14 +34,6 @@ class TargetProcessor:
     model: YOLO
     detected_targets: List[Target]
 
-    from tracker import Tracker
-
-
-class TargetProcessor:
-    from tracker import Tracker
-
-    tracker: Tracker
-
     def __init__(
         self,
         frame_width: int,
@@ -64,10 +54,12 @@ class TargetProcessor:
             tracker: Trackerオブジェクト
             min_target_size (Tuple[int, int]): 対象とみなす最小の幅と高さ (デフォルト: (30, 60))
         """
+        from tracker import Tracker
+
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.logger = logger
-        self.tracker = tracker
+        self.tracker: Tracker = tracker
         self.model = model.to("cuda")
         self.min_target_width, self.min_target_height = (
             min_target_size  # 最小サイズを設定
@@ -75,7 +67,7 @@ class TargetProcessor:
         self.prev_command = Commands.STOP_TEMP
         self.last_target_features = None
         self.current_target = None
-        self.color_tolerance = 20
+        self.color_tolerance = 45
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
@@ -115,7 +107,7 @@ class TargetProcessor:
             self.tracker.CLOSE_OCCUPANCY_RATIO,  # 例: 0.4
             self.tracker.AUTO_STOP_OCCUPANCY_RATIO,  # 例: 0.6
         ]
-        speeds = [400, 300, 150]
+        speeds = [350, 280, 100]
 
         occupancy = self.tracker.occupancy_ratio
 
@@ -140,6 +132,8 @@ class TargetProcessor:
         return default_speed
 
     def get_target_pos_str(self, target_center_x):
+        import tracker
+
         # X座標の中心を0に調整
         x_centered = target_center_x - (self.frame_width // 2)
 
@@ -162,7 +156,6 @@ class TargetProcessor:
             )
         else:
             target_position = Position.CENTER
-            self.tracker.lost_target_command = Commands.STOP_TEMP
 
         return target_position
 
