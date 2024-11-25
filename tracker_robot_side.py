@@ -74,7 +74,7 @@ class TrackerSocketRobot:
         elif cmd == "close":
             self.close()
         elif cmd == "send":
-            ret = self.send_serial(data)
+            ret = self.send_serial(data, cmd_id)
             self.send_to_host(
                 ret,
                 cmd_id,
@@ -82,7 +82,7 @@ class TrackerSocketRobot:
                 True if data == Commands.CHECK or data == Commands.STOP_TEMP else False,
             )
         elif cmd == "print":
-            res, ret = self.print_serial()
+            res, ret = self.receive_serial()
             response = ret if res else "NULL"
             self.send_to_host(response, cmd_id, "print")
 
@@ -128,7 +128,7 @@ class TrackerSocketRobot:
 
     last_send_check = time.time()
 
-    def send_serial(self, data) -> bool:
+    def send_serial(self, data, id=-1) -> bool:
         """Send a command via serial communication.
 
         Args:
@@ -141,9 +141,9 @@ class TrackerSocketRobot:
             return False
 
         if isinstance(data, tuple):
-            data = "{}:{}".format(data[0], data[1])
+            data = "{}:{}:{}".format(id, data[0], data[1])
         else:
-            data = data.upper()
+            data = f"{id}:{data.upper()}"
 
         self.command_sent = self.get_command(data).upper()
         self.serial_sent = data
@@ -161,8 +161,8 @@ class TrackerSocketRobot:
             self.com_connected = False
             return False
 
-    def print_serial(self):
-        """Output the content received from Arduino via serial communication."""
+    def receive_serial(self):
+        """Receive the content from Arduino via serial communication."""
         try:
             if isinstance(self.com, serial.Serial) and self.com.in_waiting > 0:
                 res = self.com.readline().decode("utf-8", "ignore").strip()
@@ -287,11 +287,16 @@ def loop():
                 if tracker:
                     tracker.on_receive(data)
             if tracker:
-                res, ret = tracker.print_serial()
+                res, ret = tracker.receive_serial()
                 if res:
-                    pr(f"Arduino: {ret}")
-                    response = ret if res else "NULL"
-                    tracker.send_to_host(response, -1, "print", True)
+                    parts = str(ret).split(":")
+                    cmd_id = parts[0] if len(parts) > 1 else -1
+                    response = parts[0] if len(parts) == 0 else cmd_id
+                    if cmd_id == response and len(parts) > 1:
+                        response = parts[1] if res else "NULL"
+                    if len(parts) == 1:
+                        response = ret
+                    tracker.send_to_host(response, cmd_id, "print", True)
     except ConnectionResetError:
         if tracker:
             tracker.stop()

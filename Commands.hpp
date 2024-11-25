@@ -1,3 +1,4 @@
+#include <stdlib.h>
 // Commands.hpp
 #ifndef COMMANDS_HPP
 #define COMMANDS_HPP
@@ -8,19 +9,27 @@ namespace model {
 
 class Command {
    public:
-    Command(String command, int value)
-        : command_(command), value_(value) {}
+    Command(String command, int value, int id)
+        : command_(command), value_(value), id_(id) {}
 
     Command(String serialStr) { parseCommand(serialStr); }
 
     void parseCommand(String serialStr) {
-        int colonIndex = serialStr.indexOf(':');
-        if (colonIndex == -1) {
+        int firstColonIndex = serialStr.indexOf(':');
+        if (firstColonIndex == -1) {
             command_ = serialStr;
             value_ = 0;
+            id_ = -1;
         } else {
-            command_ = serialStr.substring(0, colonIndex);
-            value_ = atof(serialStr.substring(colonIndex + 1).c_str());
+            id_ = atoi(serialStr.substring(0, firstColonIndex).c_str());
+            int secondColonIndex = serialStr.indexOf(':', firstColonIndex + 1);
+            if (secondColonIndex == -1) {
+                command_ = serialStr.substring(firstColonIndex + 1);
+                value_ = 0;
+            } else {
+                command_ = serialStr.substring(firstColonIndex + 1, secondColonIndex);
+                value_ = atoi(serialStr.substring(secondColonIndex + 1).c_str());
+            }
         }
     }
 
@@ -28,9 +37,12 @@ class Command {
 
     int getValue() const { return value_; }
 
+    int getID() const {return id_; }
+
    private:
     String command_;
     int value_;
+    int id_;
 };
 }  // namespace model
 
@@ -55,6 +67,7 @@ public:
     static const String ROTATE_RIGHT;
     static const String ROTATE_LEFT;
     static const String DETACH_MOTOR;
+    static const String GET_DISTANCE;
     
     // 指定されたコマンドが無視リストに含まれているかを判定
     static bool is_ignore(const String &cmd)
@@ -66,7 +79,7 @@ public:
     static bool is_ignore_same_prev(const String &cmd, const String &prev)
     {
         // 無視しない連続コマンドを配列で定義
-        const String allowed_repeats[] = {STOP, SPD_UP, SPD_DOWN, CHECK, DETACH_MOTOR};
+        const String allowed_repeats[] = {STOP, SPD_UP, SPD_DOWN, CHECK, DETACH_MOTOR, GET_DISTANCE};
         
         // 配列内に指定コマンドが存在するかチェック
         for (const String& allowed_cmd : allowed_repeats) {
@@ -98,5 +111,6 @@ const String Commands::SET_DEFAULT_SPEED = "SD";
 const String Commands::ROTATE_RIGHT = "RR";
 const String Commands::ROTATE_LEFT = "RL";
 const String Commands::DETACH_MOTOR = "DETACH";
+const String Commands::GET_DISTANCE = "D";
 
 #endif // COMMANDS_HPP

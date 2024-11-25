@@ -86,6 +86,38 @@ namespace RFIDTR {
     int leftSpeedStep = 0;
     int rightSpeedStep = 0;
 
+    // ホイールの半径 (メートル)
+    const float WHEEL_RADIUS = 0.05; // 例: 0.05メートル
+    // 左右ホイール間の距離 (メートル)
+    const float WHEEL_BASE = 0.3; // 例: 0.3メートル
+
+    // 合計移動距離 (メートル)
+    float totalDistance = 0.0;
+    // 前回の更新時刻 (ミリ秒)
+    unsigned long lastUpdateTime = millis();
+
+    // 移動距離を計算する関数
+    void calculateDistance() {
+        unsigned long currentTime = millis();
+        float deltaTime = (currentTime - lastUpdateTime) / 1000.0; // 時間差 (秒)
+        lastUpdateTime = currentTime;
+
+        // 左右モーターの現在の速度 (メートル/秒)
+        float leftSpeed = currentLeftSpeed * WHEEL_RADIUS / 1000.0;  // MMPS を MPS に変換
+        float rightSpeed = currentRightSpeed * WHEEL_RADIUS / 1000.0; // MMPS を MPS に変換
+
+        // 線形速度と角速度を計算
+        float linearVelocity = (leftSpeed + rightSpeed) / 2.0;
+        float angularVelocity = (rightSpeed - leftSpeed) / WHEEL_BASE;
+
+        // 線形速度を基に合計移動距離を更新
+        totalDistance += linearVelocity * deltaTime;
+    }
+
+    float getTotalDistanceInMeters() {
+        return totalDistance;
+    }
+
     void attachAll() {
         wheels[MOTOR_RIGHT].attach(PIN_MOTOR_RIGHT);
         wheels[MOTOR_LEFT].attach(PIN_MOTOR_LEFT);
@@ -230,12 +262,20 @@ namespace RFIDTR {
         model::Command cmd(cmdStr);
         String command = cmd.getCommand();
         int value = cmd.getValue();
+        int id = cmd.getID();
 
         if (Commands::is_ignore_same_prev(command, prevCommand)) {
             return;
         }
 
+        // 現在は不使用 (GET_DISTANCEで代用)
         if (command == Commands::CHECK) {
+            lastCheck = millis();
+        }
+        if (command == Commands::GET_DISTANCE) {
+            Serial.print(id);
+            Serial.print(":");
+            Serial.println(getTotalDistanceInMeters());
             lastCheck = millis();
         }
 
@@ -429,6 +469,8 @@ void loop() {
             }
         }
     }
+
+    RFIDTR::calculateDistance();
 
     if (operationMode == PID) {
         Omni.PIDRegulate();

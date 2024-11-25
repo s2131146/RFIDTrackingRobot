@@ -64,7 +64,7 @@ class GUI:
         self.create_main_frame()
         self.create_control_frame()
         self.create_control_panel()
-        self.create_timer()
+        self.create_status_label()
 
         self.update_stop()
 
@@ -446,7 +446,7 @@ class GUI:
 
         canvas.itemconfig(text_id, text=new_text)
 
-    def create_timer(self):
+    def create_status_label(self):
         timer_font = font.Font(family="Consolas", size=16)
 
         self.label_timer_active = tk.Label(
@@ -478,7 +478,23 @@ class GUI:
             font=timer_font,
         )
         self.label_tracking_rate.grid(
+            row=4, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+        self.label_miss_count = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_miss_count.grid(
             row=3, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+        self.label_move_distance = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_move_distance.grid(
+            row=5, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
     start_time = time.time()
@@ -1042,6 +1058,16 @@ class GUI:
         self.update_commands("r", self.received_text, self.label_received)
         self.update_wheel()
         self.update_timer()
+        self.update_status_label()
+
+    def update_status_label(self):
+        if not self.destroy:
+            self.label_miss_count.config(
+                text=f"MISSED: {self.tracker.missed_target_count}"
+            )
+            self.label_move_distance.config(
+                text=f"MOVED: {self.tracker.move_distance:.2f}m"
+            )
 
     def update_commands(self, key, text_widget, label_widget):
         if self.queue.has(key) and not self.destroy:

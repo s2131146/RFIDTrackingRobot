@@ -103,9 +103,6 @@ class Tracker:
         # 現在停止中か
         self.stop = False
 
-        # 対象が最後に検出された時刻
-        self.target_last_seen_time = None
-
         # 自動停止の距離閾値（占有率）
         self.AUTO_STOP_OCCUPANCY_RATIO = 0.6
 
@@ -145,6 +142,16 @@ class Tracker:
 
         # 最後に対象を見つけた時刻
         self.target_last_seen_time = time.time()
+
+        # 対象を見失った回数
+        self.missed_target_count = 0
+
+        # 見失ったか
+        self.missed_target = False
+
+        # ロボットが移動した距離
+        self.move_distance = 0.0
+        self.move_distance_id_list = []
 
         # GUI反映用受信データ
         self.received_serial = None
@@ -339,18 +346,20 @@ class Tracker:
     def send(self, data):
         """データをシリアル通信で送信"""
         if not self.gui.var_enable_serial.get():
-            return
+            return False, -1
 
         if isinstance(data, tuple):
             command, value = data
             data = f"{command}:{value}"
 
+        data = data.upper()
+
         if not Commands.contains(self.serial.get_command(data)):
             logger.warning(f"Invalid command: {data}")
-            return False
+            return False, -1
 
         if data == Commands.START:
-            return True
+            return True, -1
 
         if (
             self.prev_command == data
@@ -360,13 +369,11 @@ class Tracker:
             and data != Commands.DETACH_MOTOR
             and data != Commands.SPD_UP
             and data != Commands.SPD_DOWN
+            and data != Commands.GET_DISTANCE
         ):
-            return True
+            return True, -1
 
-        if data != Commands.CHECK and data != Commands.STOP_TEMP:
-            self.prev_command = data
-
-        ret = self.serial.send_serial(data)
+        ret, ser_id = self.serial.send_serial(data)
         if ret:
             self.print_serial_stat()
         self.exec_sent_command()
@@ -374,7 +381,7 @@ class Tracker:
         if not Commands.is_ignore(data):
             self.gui.queue.add("s", self.serial.serial_sent)
 
-        return True
+        return True, ser_id
 
     def exec_sent_command(self):
         """送信したコマンドに基づいて内部状態を更新"""
@@ -541,6 +548,11 @@ class Tracker:
             self.init_detection_flags()
             self.capture_frame()
 
+            if self.serial.has_received(self.move_distance_id_list):
+                received = self.serial.get_receive(self.move_distance_id_list)
+                if received:
+                    self.move_distance = float(received)
+
             detected_targets = []
             if self.gui.var_enable_tracking.get():
                 if not self.first_disable_tracking:
@@ -633,6 +645,10 @@ class Tracker:
         detected_targets = self._detect_and_select_targets(current_time)
         if len(detected_targets) > 0:
             self.target = detected_targets[0]
+            if self.target_detection_start_time is None:
+                self.target_detection_start_time = current_time
+            else:
+                self.time_detected = current_time - self.target_detection_start_time
         else:
             self.target = None
 
@@ -664,8 +680,19 @@ class Tracker:
                     detected_targets
                 )
                 if selected_target is None:
+                    if (
+                        (
+                            self.RFID_ENABLED
+                            and self.lost_target_command == Commands.STOP_TEMP
+                        )
+                        or not self.RFID_ENABLED
+                        and time.time() - self.target_last_seen_time > 1
+                    ) and not self.missed_target:
+                        self.missed_target = True
+                        self.missed_target_count += 1
                     self._handle_no_targets(current_time)
                 else:
+                    self.missed_target = False
                     self.stop_temp = False
                     self.stop_exec_cmd = False
             else:
@@ -686,6 +713,9 @@ class Tracker:
             if result is not None:
                 target_center_x, self.target_x, _ = result
                 self.target_position = self.get_target_pos_str(target_center_x)
+                if self.time_detected >= 0.3:
+                    self.target_last_seen_time = time.time()
+                    self.stop_temp = False
 
         if self.RFID_ENABLED:
             self.apply_rfid_direction()
@@ -920,7 +950,9 @@ class Tracker:
         ):
             self.sent_count += 1
             self.interval_serial_send_start_time = current_time
-            self.send(Commands.CHECK)
+            ret, mid = self.send(Commands.GET_DISTANCE)
+            if ret:
+                self.move_distance_id_list.append(mid)
 
         # 障害物が目の前なら、後退して転回
         if (

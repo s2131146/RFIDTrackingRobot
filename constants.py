@@ -47,11 +47,12 @@ class Commands:
     ROTATE_RIGHT: ClassVar[str] = "RR"
     ROTATE_LEFT: ClassVar[str] = "RL"
     DETACH_MOTOR: ClassVar[str] = "DETACH"
+    GET_DISTANCE: ClassVar[str] = "D"
 
     DISCONNECT: ClassVar[str] = "DC"
     DEBUG_PID_INIT: ClassVar[str] = "PID"
 
-    LIST_IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK}
+    LIST_IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK, GET_DISTANCE}
     LIST_ROTATE: ClassVar[Set[str]] = {ROTATE_RIGHT, ROTATE_LEFT}
 
     @classmethod

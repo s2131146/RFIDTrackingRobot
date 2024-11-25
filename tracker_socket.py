@@ -3,6 +3,7 @@ import threading
 import time
 import socket
 import traceback
+from typing import Tuple
 import tqueue
 import asyncio
 import numpy as np
@@ -134,7 +135,7 @@ class TrackerSocket:
 
             import tracker
 
-            tracker.run_robot_if_needed()
+            tracker.Tracker.run_robot_if_needed()
         return self.ser_connected
 
     async def receive_data(self):
@@ -197,13 +198,13 @@ class TrackerSocket:
             cid = parts[1]
             value = parts[2]
             value_bool = Utils.try_to_bool(value)
-            if not isinstance(value_bool, bool):
+            if not isinstance(value_bool, bool) and cid == "-1":
                 self.queue.add("r", value)
             if cmd == "force":
                 logger.info(value)
             if cmd == "logger.info":
                 self.logger.info_serial(value)
-            if cid != -1 and self.queue.get(f"w:{cid}") is not None:
+            if cid != -1:
                 self.queue.add(cid, value_bool)
 
     async def loop_serial(self):
@@ -214,7 +215,9 @@ class TrackerSocket:
 
         while self.active_loop:
             try:
-                if not self.ser_connected and not await self.connect_socket():
+                if not self.ser_connected and (
+                    self.disconnecting or not await self.connect_socket()
+                ):
                     continue
 
                 data = await self.receive_data()
@@ -260,7 +263,19 @@ class TrackerSocket:
                 return None
         return self.queue.get(fid)
 
-    def send_serial(self, data) -> bool:
+    def has_received(self, id):
+        if isinstance(id, list):
+            return self.queue.any(id)
+
+        return self.queue.has(id)
+
+    def get_receive(self, id):
+        if isinstance(id, list):
+            return self.queue.get_latest(id)
+
+        return self.queue.get(id)
+
+    def send_serial(self, data) -> Tuple[bool, int]:
         """
         シリアル通信でコマンドを送信
 
@@ -268,19 +283,20 @@ class TrackerSocket:
             data (str|tuple): 送信データ (コマンド or (コマンド, 値))
 
         Returns:
-            bool: 送信結果
+            Tuple[bool, int]: 送信結果, ID
         """
         if not self.ser_connected:
             if not self.test_connect():
-                return False
+                return False, -1
             else:
                 asyncio.run(self.connect_socket())
-                return False
+                return False, -1
 
         if self.data_id > 99999:
             self.data_id = 0
 
         self.data_id += 1
+        ser_id = self.data_id
         skip_log = True if Commands.is_ignore(data) else False
         if isinstance(data, tuple):
             cmd = data[0].upper()
@@ -299,17 +315,17 @@ class TrackerSocket:
         try:
             if skip_log:
                 self.send_data(data)
-                return True
+                return True, ser_id
             else:
                 res = self.wait_for_result(data, self.data_id)
                 if data == "STOP":
                     logger.info(res)
             if res is None:
                 logger.error("[Socket] No connection now")
-            return True
+            return True, ser_id
         except socket.error:
             self.ser_connected = False
-            return False
+            return False, ser_id
 
     def get_command(self, data):
         """
@@ -351,16 +367,6 @@ class TrackerSocket:
 
     def get_received_queue(self):
         return self.queue.get_all("r")
-
-    def print_serial(self, received):
-        """
-        Arduinoからのシリアル通信の内容を出力
-
-        Args:
-            received (str): 受信したデータ
-        """
-        if self.debug:
-            logger.info(f"[Serial] {received}")
 
     color_image, depth_image = (
         np.ones((480, 640, 3), dtype=np.uint8) * 255,

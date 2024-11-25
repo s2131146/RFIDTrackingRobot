@@ -305,31 +305,6 @@ class TargetProcessor:
             return self.select_closest_target(matching_targets)
         return None
 
-    def handle_single_target(self, target: Target, frame):
-        """単一ターゲットを処理します。"""
-        current_time = time.time()
-        if self.tracker.target_detection_start_time is None:
-            self.tracker.target_detection_start_time = current_time
-        else:
-            self.tracker.time_detected = (
-                current_time - self.tracker.target_detection_start_time
-            )
-
-            if self.tracker.time_detected >= 0.3:
-                self.tracker.target_last_seen_time = current_time
-                self.tracker.stop_temp = False
-                result = self.process_target([target], frame)
-                if result is not None:
-                    (target_center_x, target_x, target_bboxes) = result
-                    self.tracker.target_position = self.get_target_pos_str(
-                        target_center_x
-                    )
-                    # 選択されたターゲットの特徴を保存
-                    self.last_target_features = {
-                        "clothing_color_rgb": target.clothing_color_rgb
-                        # 他の必要な特徴を追加
-                    }
-
     def process_target(
         self, targets: List[Target], frame
     ) -> Optional[Tuple[int, int, List[Tuple[int, int, int, int]]]]:
