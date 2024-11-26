@@ -31,6 +31,7 @@ CONTROL_ROTATE_RIGHT = "rr"
 CONTROL_ROTATE_LEFT = "lr"
 
 AVI_NAME = "tracker.avi"
+FFMPEG_PATH = "C:/Users/admin/Downloads/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"
 
 TIMER_ACTIVE = 0
 TIMER_START = 1
@@ -189,7 +190,7 @@ class GUI:
         if not os.path.exists("./records"):
             os.makedirs("./records")
         command = [
-            "C:/Users/admin/Downloads/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe",
+            FFMPEG_PATH,
             "-i",
             AVI_NAME,
             "-vcodec",
@@ -288,11 +289,15 @@ class GUI:
         self.serial_checkbox.grid(row=1, column=3, padx=0, pady=0, sticky=STICKY_LEFT)
 
         self.label_wheel = tk.Label(self.bottom_frame)
-        self.label_wheel.grid(row=0, column=1, padx=0, pady=0, sticky=STICKY_CENTER)
+        self.label_wheel.grid(
+            row=0, column=1, columnspan=10, padx=0, pady=0, sticky=STICKY_CENTER
+        )
 
         # RFIDアンテナのアイコンを「Enable tracking」の右側に固定
         self.rfid_frame = tk.Frame(self.bottom_frame)
-        self.rfid_frame.grid(row=0, column=0, padx=(0, 0), pady=0, sticky=STICKY_CENTER)
+        self.rfid_frame.grid(
+            row=0, column=0, columnspan=10, padx=(0, 0), pady=0, sticky=STICKY_CENTER
+        )
 
         self.rfid_values = [tk.StringVar(value="0") for _ in range(4)]
         self.rfid_canvases = []
@@ -305,7 +310,7 @@ class GUI:
             canvas = tk.Canvas(
                 self.rfid_frame, width=50, height=50, highlightthickness=0
             )
-            canvas.grid(row=0, column=i, padx=5, pady=0)
+            canvas.grid(row=0, column=i, padx=5, pady=(10, 0))
 
             rect_id = self.draw_rounded_rectangle(
                 canvas, 5, 5, 45, 45, radius=10, fill="white", outline="black"
@@ -335,7 +340,7 @@ class GUI:
             column=0,
             columnspan=5,
             padx=0,
-            pady=(0, 0),
+            pady=(10, 0),
             sticky=STICKY_CENTER,
         )
 
@@ -384,7 +389,9 @@ class GUI:
             )
 
         self.depth_frame = tk.Label(self.bottom_frame)
-        self.depth_frame.grid(row=0, column=1, padx=0, pady=0)
+        self.depth_frame.grid(
+            row=0, column=2, columnspan=10, padx=0, pady=0, sticky=STICKY_CENTER
+        )
 
     def draw_rounded_rectangle(self, canvas, x1, y1, x2, y2, radius=25, **kwargs):
         points = [

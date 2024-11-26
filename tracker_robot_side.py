@@ -302,6 +302,9 @@ def loop():
         if tracker:
             tracker.stop()
         pr("Client disconnected")
+    except ConnectionAbortedError:
+        if tracker:
+            tracker.stop()
     except Exception as e:
         pr("An error occurred: {}\n{}".format(e, traceback.format_exc()))
     finally:

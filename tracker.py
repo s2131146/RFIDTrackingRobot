@@ -654,15 +654,14 @@ class Tracker:
         else:
             self.target = None
 
-        if (
-            len(detected_targets) > 0
-            and detected_targets[0].y2 - detected_targets[0].y1
-            > self.frame_height * 0.8
-        ):
-            if not self.find_target_rotate:
+        if len(detected_targets) > 0:
+            if (
+                detected_targets[0].y2 - detected_targets[0].y1
+                > self.frame_height * 0.8
+            ):
                 self.find_target_rotate = True
-        else:
-            self.find_target_rotate = False
+            else:
+                self.find_target_rotate = False
 
         return detected_targets
 
@@ -962,10 +961,7 @@ class Tracker:
             and self.is_close_obs
             and not self.stop_exec_cmd
             and self.gui.var_enable_tracking.get()
-            and not (
-                self.target_position == Position.CENTER
-                or self.lost_target_command == Commands.STOP_TEMP
-            )
+            and self.lost_target_command != Commands.STOP_TEMP
         ):
             self.stop_exec_cmd = True
             self.obs_backoff_start_time = time.time()

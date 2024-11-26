@@ -99,15 +99,12 @@ class TargetProcessor:
 
     def update_speed_based_on_distance(self):
         """対象の占有率に基づいてself.default_speedを滑らかに更新"""
-
-        # 定義された占有率と速度のポイント
-        # 占有率: 0% -> 200, 40% -> 200, 60% -> 100
         ratios = [
             0.0,
-            self.tracker.CLOSE_OCCUPANCY_RATIO,  # 例: 0.4
-            self.tracker.AUTO_STOP_OCCUPANCY_RATIO,  # 例: 0.6
+            self.tracker.CLOSE_OCCUPANCY_RATIO,
+            self.tracker.AUTO_STOP_OCCUPANCY_RATIO,
         ]
-        speeds = [350, 280, 100]
+        speeds = [300, 250, 150]
 
         occupancy = self.tracker.occupancy_ratio
 
