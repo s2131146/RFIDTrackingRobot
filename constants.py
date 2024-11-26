@@ -46,8 +46,9 @@ class Commands:
     SET_DEFAULT_SPEED: ClassVar[str] = "SD"
     ROTATE_RIGHT: ClassVar[str] = "RR"
     ROTATE_LEFT: ClassVar[str] = "RL"
-    DETACH_MOTOR: ClassVar[str] = "DETACH"
+    RESET_ROBOT: ClassVar[str] = "RESET"
     GET_DISTANCE: ClassVar[str] = "D"
+    RESET_DISTANCE: ClassVar[str] = "RD"
 
     DISCONNECT: ClassVar[str] = "DC"
     DEBUG_PID_INIT: ClassVar[str] = "PID"

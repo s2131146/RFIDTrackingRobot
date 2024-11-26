@@ -98,6 +98,7 @@ class Tracker:
             DEBUG_SERIAL,
             TCP_PORT,
             DEBUG_USE_ONLY_WEBCAM,
+            self,
         )
 
         # 現在停止中か
@@ -366,10 +367,11 @@ class Tracker:
             and data != Commands.CHECK
             and data != Commands.STOP
             and data != Commands.STOP_TEMP
-            and data != Commands.DETACH_MOTOR
+            and data != Commands.RESET_ROBOT
             and data != Commands.SPD_UP
             and data != Commands.SPD_DOWN
             and data != Commands.GET_DISTANCE
+            and data != Commands.RESET_DISTANCE
         ):
             return True, -1
 
@@ -951,7 +953,7 @@ class Tracker:
             self.sent_count += 1
             self.interval_serial_send_start_time = current_time
             ret, mid = self.send(Commands.GET_DISTANCE)
-            if ret:
+            if ret and mid != -1:
                 self.move_distance_id_list.append(mid)
 
         # 障害物が目の前なら、後退して転回
@@ -1142,13 +1144,16 @@ class Tracker:
         )
 
         if not re_init:
-            tracker_thread = threading.Thread(target=self.run_loop_serial)
-            tracker_thread.daemon = True
-            tracker_thread.start()
+            self.start_loop_serial()
 
         self.initialized = True
 
-    def run_loop_serial(self):
+    def start_loop_serial(self):
+        tracker_thread = threading.Thread(target=self._run_loop_serial)
+        tracker_thread.daemon = True
+        tracker_thread.start()
+
+    def _run_loop_serial(self):
         asyncio.run(self.serial.loop_serial())
 
     def start(self):

@@ -2,8 +2,6 @@ import math
 import threading
 import time
 import socket
-import traceback
-from typing import Tuple
 import tqueue
 import asyncio
 import numpy as np
@@ -12,6 +10,7 @@ import logger as l
 import pyrealsense2 as rs
 from utils import Utils
 from constants import Commands
+from typing import Tuple
 
 # 別PCをロボットと接続し、無線通信を行うか（映像が１フレームしか来ないバグあり）
 WIRELESS_MODE = False
@@ -29,8 +28,9 @@ class TrackerSocket:
     queue = tqueue.TQueue()
     data_id = 0
     pipeline = None
+    active_loop = False
 
-    def __init__(self, p, b, i, d, port, webcam):
+    def __init__(self, p, b, i, d, port, webcam, tracker):
         """
         TrackerSocketクラスの初期化
 
@@ -42,12 +42,15 @@ class TrackerSocket:
             port (int): ソケットポート番号
             webcam (bool): ウェブカメラの使用フラグ
         """
+        from tracker import Tracker
+
         self.ser_port = p
         self.baud = b
         self.interval = i
         self.debug = d
         self.tcp_ip = self.get_local_ip()
         self.tcp_port = port
+        self.tracker: Tracker = tracker
 
         if not webcam:
             self.pipeline = rs.pipeline()
@@ -120,7 +123,7 @@ class TrackerSocket:
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client_socket.settimeout(0.5)
-            self.client_socket.setblocking(True)
+            self.client_socket.setblocking(False)
             self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
             await asyncio.get_event_loop().sock_connect(
                 self.client_socket, (self.tcp_ip, self.tcp_port)
@@ -212,11 +215,12 @@ class TrackerSocket:
         データ受信用ループ
         """
         self.active_loop = True
+        logger.info("Starting loop serial")
 
         while self.active_loop:
             try:
                 if not self.ser_connected and (
-                    self.disconnecting or not await self.connect_socket()
+                    not await self.connect_socket() or self.client_socket.fileno() == -1
                 ):
                     continue
 
@@ -228,9 +232,9 @@ class TrackerSocket:
             except ConnectionAbortedError:
                 return
             except Exception:
-                logger.error(
-                    f"[Socket] An error occurred at loop_serial: {traceback.format_exc()}"
-                )
+                continue
+
+        logger.info("Loop serial ended.")
 
     def send_startup(self):
         self.send_data(
@@ -348,15 +352,16 @@ class TrackerSocket:
 
     def disconnect(self):
         if self.ser_connected:
+            self.active_loop = False
             self.disconnecting = True
             self.send_data(Commands.DISCONNECT)
             self.ser_connected = False
-            self.loop_serial = False
+            self.client_socket.shutdown(socket.SHUT_RDWR)
             self.client_socket.close()
 
     def reconnect(self):
         if self.disconnecting:
-            asyncio.run(self.connect_socket())
+            self.tracker.start_loop_serial()
 
     def send_data(self, data):
         message = f"START{data}END"

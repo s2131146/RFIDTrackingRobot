@@ -64,7 +64,7 @@ class TrackerSocketRobot:
         else:
             data = remaining_parts[0]
 
-        if data == Commands.DETACH_MOTOR:
+        if data == Commands.RESET_ROBOT:
             self.com.dtr = False
             time.sleep(0.1)
             self.com.dtr = True
@@ -283,6 +283,7 @@ def loop():
             if data.startswith("setup:"):
                 data = data[len("setup:") :].split(":")
                 tracker = TrackerSocketRobot(*data)
+                tracker.connect_socket()
             else:
                 if tracker:
                     tracker.on_receive(data)

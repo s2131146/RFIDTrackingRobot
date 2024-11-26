@@ -1095,13 +1095,14 @@ class GUI:
             text_widget.see(tk.END)
 
     def detach_button_clicked(self):
-        self.tracker.send(Commands.DETACH_MOTOR)
+        self.tracker.send(Commands.RESET_ROBOT)
         self.update_status("Reset Arduino.")
 
     def record_button_clicked(self):
         if not self.recording:
             self.rec_button.config(text="STOP REC", fg="red")
             self.init_timer()
+            self.tracker.send(Commands.RESET_DISTANCE)
             self.start_recording()
         else:
             self.tracker.stop_motor()

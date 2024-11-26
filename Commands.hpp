@@ -66,8 +66,9 @@ public:
     static const String SET_DEFAULT_SPEED;
     static const String ROTATE_RIGHT;
     static const String ROTATE_LEFT;
-    static const String DETACH_MOTOR;
+    static const String RESET_MOTOR;
     static const String GET_DISTANCE;
+    static const String RESET_DISTANCE;
     
     // 指定されたコマンドが無視リストに含まれているかを判定
     static bool is_ignore(const String &cmd)
@@ -79,7 +80,7 @@ public:
     static bool is_ignore_same_prev(const String &cmd, const String &prev)
     {
         // 無視しない連続コマンドを配列で定義
-        const String allowed_repeats[] = {STOP, SPD_UP, SPD_DOWN, CHECK, DETACH_MOTOR, GET_DISTANCE};
+        const String allowed_repeats[] = {STOP, SPD_UP, SPD_DOWN, CHECK, RESET_MOTOR, GET_DISTANCE, RESET_DISTANCE};
         
         // 配列内に指定コマンドが存在するかチェック
         for (const String& allowed_cmd : allowed_repeats) {
@@ -110,7 +111,8 @@ const String Commands::R_SPEED = "RS";
 const String Commands::SET_DEFAULT_SPEED = "SD";
 const String Commands::ROTATE_RIGHT = "RR";
 const String Commands::ROTATE_LEFT = "RL";
-const String Commands::DETACH_MOTOR = "DETACH";
+const String Commands::RESET_MOTOR = "RESET";
 const String Commands::GET_DISTANCE = "D";
+const String Commands::RESET_DISTANCE = "RD";
 
 #endif // COMMANDS_HPP

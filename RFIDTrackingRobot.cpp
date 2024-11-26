@@ -29,6 +29,8 @@ enum OperationMode {
     FIX     // 暴走修復    * 必ずモーターを浮かせて実行してください
 };
 
+bool reconnect = false;
+
 Servo wheels[2];
 
 irqISR(irq1, isr1);
@@ -53,7 +55,7 @@ int DEFAULT_SPEED = 300;
 
 int currentSpeed = DEFAULT_SPEED;
 
-const int TIME_APPLY_SPEED = 2500;
+const int TIME_APPLY_SPEED = 1500;
 
 namespace RFIDTR {
     // 前回実行したコマンド
@@ -87,9 +89,9 @@ namespace RFIDTR {
     int rightSpeedStep = 0;
 
     // ホイールの半径 (メートル)
-    const float WHEEL_RADIUS = 0.05; // 例: 0.05メートル
+    const float WHEEL_RADIUS = 1.155;
     // 左右ホイール間の距離 (メートル)
-    const float WHEEL_BASE = 0.3; // 例: 0.3メートル
+    const float WHEEL_BASE = 0.3;
 
     // 合計移動距離 (メートル)
     float totalDistance = 0.0;
@@ -111,7 +113,7 @@ namespace RFIDTR {
         float angularVelocity = (rightSpeed - leftSpeed) / WHEEL_BASE;
 
         // 線形速度を基に合計移動距離を更新
-        totalDistance += linearVelocity * deltaTime;
+        totalDistance += (linearVelocity * deltaTime);
     }
 
     float getTotalDistanceInMeters() {
@@ -278,6 +280,14 @@ namespace RFIDTR {
             Serial.println(getTotalDistanceInMeters());
             lastCheck = millis();
         }
+        if (command == Commands::RESET_DISTANCE) {
+            totalDistance = 0.0;
+            Serial.println("Reset distance.");
+        }
+        if (command == Commands::RESET_MOTOR) {
+            Serial.println("Waiting for recconect...");
+            reconnect = true;
+        }
 
         if (command == Commands::STOP) {
             stop();
@@ -405,6 +415,11 @@ void setup() {
 bool firstConnect = true;
 
 void loop() {
+    if (reconnect) {
+        Serial.end();
+        Serial.begin(19200);
+        reconnect = false;
+    }
     if (Serial.available()) {
         if (firstConnect) {
             Serial.println("Connected.");
