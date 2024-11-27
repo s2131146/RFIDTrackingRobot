@@ -529,13 +529,35 @@ class Tracker:
 
     def process_motor(self):
         """対象の位置に基づいてモーターを制御"""
-        self._control_motor_for_target()
+        skip = self._control_motor_for_target()
 
         self.motor_power_l = int(self.motor_power_l)
         self.motor_power_r = int(self.motor_power_r)
 
-        self._send_target_position_if_rfid_mode()
+        force = (
+            self.RFID_ENABLED
+            and self.target_position != Position.NONE
+            and Commands.is_rotate(self.rfid_reader.get_direction())
+        )
+        self._send_target_position_if_rfid_mode(force)
         self._send_default_speed_if_changed()
+
+        if (self.wall != Obstacles.OBS_NONE and self.avoid_wall) or (
+            Obstacles.is_fix(self.wall_parallel) and not skip
+        ):
+            self.apply_motor_wall(self.wall)
+
+    def receive_distance(self):
+        if self.serial.has_received(self.move_distance_id_list):
+            received = self.serial.get_receive(self.move_distance_id_list)
+            if received:
+                self.move_distance = float(received)
+
+    def stop_if_no_targets_for_sec(self):
+        # 一周しても見つからない場合は停止（音を鳴らすかも）
+        if self.stop_exec_cmd and time.time() - self.find_target_start_time > 8:
+            self.stop_exec_cmd = False
+            self.send(Commands.STOP_TEMP)
 
     def main_loop(self):
         """メインループを実行"""
@@ -549,11 +571,7 @@ class Tracker:
             frame_start_time = time.time()
             self.init_detection_flags()
             self.capture_frame()
-
-            if self.serial.has_received(self.move_distance_id_list):
-                received = self.serial.get_receive(self.move_distance_id_list)
-                if received:
-                    self.move_distance = float(received)
+            self.receive_distance()
 
             detected_targets = []
             if self.gui.var_enable_tracking.get():
@@ -565,11 +583,7 @@ class Tracker:
                 self.first_disable_tracking = False
                 self.send(Commands.STOP_TEMP)
 
-            # 一周しても見つからない場合は停止（音を鳴らすかも）
-            if self.stop_exec_cmd and time.time() - self.find_target_start_time > 8:
-                self.stop_exec_cmd = False
-                self.send(Commands.STOP_TEMP)
-
+            self.stop_if_no_targets_for_sec()
             self.process_obstacles(detected_targets)
             self.process_motor()
             self.update_motor_power()
@@ -885,21 +899,18 @@ class Tracker:
             )
         )
 
-        if (self.wall != Obstacles.OBS_NONE and self.avoid_wall) or (
-            Obstacles.is_fix(self.wall_parallel) and not skip_parallel
-        ):
-            self.apply_motor_wall(self.wall)
-
         if self.wall_parallel == Obstacles.OBS_PARALLEL_FULL and not skip_parallel:
             base_speed = self._calculate_base_speed()
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
 
+        return skip_parallel
+
     _prev_send_rfid_command = Commands.CHECK
 
-    def _send_target_position_if_rfid_mode(self):
+    def _send_target_position_if_rfid_mode(self, force=False):
         """RFIDモードの場合、対象の方向を送信"""
-        if (
+        if force or (
             self.RFID_ONLY_MODE
             and self.RFID_ENABLED
             and self.gui.var_enable_tracking.get()
