@@ -50,7 +50,7 @@ DEBUG_ENABLE_TRACKING = False
 DEBUG_SLOW_SPEED = 150
 
 # 壁回避時の決め打ちパラメータ
-DELAY_SPEED_FAST = 4
+DELAY_SPEED_FAST = 1.5
 DELAY_SPEED_SLOW = 6
 
 logger = l.logger
@@ -415,8 +415,9 @@ class Tracker:
             else wall_direction
         )
 
+        # 平行に戻す場合の出力
         if is_fix_pos:
-            low_motor = base_power * 0.6
+            low_motor = int(base_power * 0.6)
 
         if self.target_position != Position.NONE:
             wall_direction = Position.invert(self.target_position)
@@ -812,7 +813,7 @@ class Tracker:
 
         bk_wall = self.wall
         if len(result) == 2:
-            if not self.auto_stop_obs:
+            if not self.auto_stop_obs and not self.stop:
                 self.stop_motor()
                 self.auto_stop_obs = True
             _, self.depth_frame = result
@@ -865,7 +866,9 @@ class Tracker:
             self.last_wall_detect_time = time.time()
 
         if not self.tracking_target_invisible or (
-            (self.avoid_wall or self.wall_parallel) and self.tracking_target_invisible
+            (self.avoid_wall or self.wall_parallel)
+            and self.tracking_target_invisible
+            and self.wall == self.lost_target_avoid_wall
         ):
             self.last_wall_avoid_time = time.time()
 
@@ -973,20 +976,24 @@ class Tracker:
             and not self.stop_exec_cmd
             and self.gui.var_enable_tracking.get()
             and self.lost_target_command != Commands.STOP_TEMP
+            and self.obs_backoff_start_time == None
         ):
-            self.stop_exec_cmd = True
+            self.stop_exec_cmd_gui = True
             self.obs_backoff_start_time = time.time()
             self.send(Commands.GO_BACK)
 
+        # 1.5秒後退したら転回
         if (
             self.stop_exec_cmd
             and self.obs_backoff_start_time is not None
             and time.time() - self.obs_backoff_start_time > 1.5
             and self.gui.var_enable_tracking.get()
         ):
+            self.stop_exec_cmd_gui = False
             self.obs_backoff_start_time = None
             self.exec_lost_target_command()
 
+        # インターバル経過したらモーター出力を送信
         if (
             current_time - self.interval_serial_send_motor_start_time
             > ROBOT_SERIAL_SEND_MOTOR_INTERVAL
@@ -1004,6 +1011,7 @@ class Tracker:
                 self.send((Commands.R_SPEED, self.motor_power_r))
                 self.bkr = self.motor_power_r
 
+        # 1秒間に送信した確認コマンドをカウント
         if current_time - self.send_check_start_time > 1:
             self.sent_count = 0
             self.send_check_start_time = current_time
@@ -1078,6 +1086,7 @@ class Tracker:
             f"auto_stop: {self.auto_stop} close: {self.is_close_obs} occupancy: {self.occupancy_ratio:.2%} exec_stop: {self.stop_exec_cmd}\n"
             f"no_wall: {delay:.2f} last_wall_detect: {self.last_wall_detect} close_wall: {self.too_close_wall} closest: {self.closest_wall_depth} lost: {self.lost_target_command}\n"
             f"map: {delay_find_map:.2f} dfind: {delay_find:.2f} rb_wall: {self.reset_to_backup} w_avoid: {self.last_wall_avoid} stmp: {self.stop_temp} find: {self.find_target_rotate}\n"
+            f"lost_wall: {self.lost_target_avoid_wall}"
         )
         self.print_d(debug_text)
         self.print_key_binds()

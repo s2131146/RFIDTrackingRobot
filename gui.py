@@ -7,6 +7,7 @@ import dxcam
 import cv2
 import numpy as np
 import tkinter as tk
+import logger
 
 from datetime import datetime
 from tkinter import scrolledtext as st, ttk, font
@@ -56,7 +57,7 @@ class GUI:
 
         self.motor_left_var = tk.StringVar(value="0%")
         self.motor_right_var = tk.StringVar(value="0%")
-        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.RFID_ONLY.name)
+        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.CAM_ONLY.name)
         self.var_auto_scroll_received = tk.IntVar(value=1)
         self.var_auto_scroll_sent = tk.IntVar(value=1)
 
@@ -139,7 +140,7 @@ class GUI:
             expected_frame_count = int(elapsed_time / target_frame_interval)
 
             # 不足しているフレームを埋め込む
-            while frame_count < expected_frame_count:
+            while frame_count < expected_frame_count and self.recording:
                 out.write(frame)
                 frame_count += 1
 
@@ -296,7 +297,7 @@ class GUI:
         # RFIDアンテナのアイコンを「Enable tracking」の右側に固定
         self.rfid_frame = tk.Frame(self.bottom_frame)
         self.rfid_frame.grid(
-            row=0, column=0, columnspan=10, padx=(0, 0), pady=0, sticky=STICKY_CENTER
+            row=0, column=0, padx=(40, 0), pady=0, sticky=STICKY_CENTER
         )
 
         self.rfid_values = [tk.StringVar(value="0") for _ in range(4)]
@@ -390,7 +391,7 @@ class GUI:
 
         self.depth_frame = tk.Label(self.bottom_frame)
         self.depth_frame.grid(
-            row=0, column=2, columnspan=10, padx=0, pady=0, sticky=STICKY_CENTER
+            row=0, column=1, columnspan=10, padx=0, pady=0, sticky=STICKY_CENTER
         )
 
     def draw_rounded_rectangle(self, canvas, x1, y1, x2, y2, radius=25, **kwargs):
@@ -813,7 +814,8 @@ class GUI:
     def start_moving(self, direction):
         if not self.moving[direction]:
             self.default_speed_bk = self.tracker.default_speed
-            self.tracker.default_speed = 250
+            self.tracker.default_speed = 200
+            self.tracker.send((Commands.SET_DEFAULT_SPEED, 200))
             self.moving[direction] = True
             self.tracker.start_motor()
             self.tracker.stop_exec_cmd_gui = True
@@ -828,8 +830,6 @@ class GUI:
             self.tracker.stop_exec_cmd_gui = False
             self.tracker.send(Commands.STOP)
             return
-
-        self.tracker.send((Commands.SET_DEFAULT_SPEED, 200))
 
         if direction == CONTROL_UP:
             self.tracker.send(Commands.GO_CENTER)

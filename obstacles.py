@@ -129,7 +129,7 @@ class Obstacles:
             self.frame_height = depth_image.shape[0]
 
         # フレームの中央領域
-        self.central_start = int(self.frame_width * 0.3)
+        self.central_start = int(self.frame_width * 0.4)
         self.central_end = int(self.frame_width * 0.6)
 
         # 左右の中央領域
@@ -900,14 +900,14 @@ class Obstacles:
             depth_rgb,
             (self.central_start, 0),
             (self.central_start, self.frame_height),
-            (165, 255, 0),
+            (0, 255, 0),
             2,
         )
         cv2.line(
             depth_rgb,
             (self.central_end, 0),
             (self.central_end, self.frame_height),
-            (165, 255, 0),
+            (0, 255, 0),
             2,
         )
         cv2.line(
@@ -924,10 +924,6 @@ class Obstacles:
             (0, 255, 165),
             2,
         )
-        cv2.line(
-            depth_rgb, (target_x, 0), (target_x, self.frame_height), (0, 255, 0), 2
-        )
-
         cv2.line(
             depth_rgb,
             (self.left_center_start, 0),
