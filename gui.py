@@ -14,6 +14,7 @@ from tkinter import scrolledtext as st, ttk, font
 from PIL import Image, ImageTk
 from constants import Commands, Position
 
+from timer import timer
 import tracker
 import tqueue
 import rfid
@@ -42,6 +43,7 @@ TIMER_TRACKING = 2
 class GUI:
     queue = tqueue.TQueue()
     timeline_index = 0
+    timer = timer()
 
     def __init__(self, _tracker: tracker.Tracker, root: tk.Tk):
         self.destroy = False
@@ -75,6 +77,7 @@ class GUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+        self.timer.register("active", False)
         self.queue.add("init")
 
     def start_recording(self):
@@ -109,10 +112,11 @@ class GUI:
         target_frame_interval = 1.0 / 30.0
         frame_count = 0
         last_frame = None
-        start_time = time.time()
+        self.timer.register("record", False)
+        self.timer.register("frame", False)
 
         while self.recording:
-            frame_start_time = time.time()
+            self.timer.update("frame")
 
             x1 = max(0, self.root.winfo_rootx())
             y1 = max(0, self.root.winfo_rooty())
@@ -124,7 +128,6 @@ class GUI:
             if y2 > screen_height:
                 y2 = screen_height
 
-            # キャプチャ範囲を設定
             monitor = (x1, y1, x2, y2)
 
             # 画面全体をキャプチャ
@@ -136,16 +139,16 @@ class GUI:
             else:
                 frame = last_frame
 
-            elapsed_time = time.time() - start_time
-            expected_frame_count = int(elapsed_time / target_frame_interval)
+            expected_frame_count = int(
+                self.timer.get_elapsed("record") / target_frame_interval
+            )
 
             # 不足しているフレームを埋め込む
             while frame_count < expected_frame_count and self.recording:
                 out.write(frame)
                 frame_count += 1
 
-            elapsed_time = time.time() - frame_start_time
-            sleep_time = max(0, target_frame_interval - elapsed_time)
+            sleep_time = max(0, target_frame_interval - self.timer.get_elapsed("frame"))
             time.sleep(sleep_time)
 
         out.release()
@@ -297,7 +300,7 @@ class GUI:
         # RFIDアンテナのアイコンを「Enable tracking」の右側に固定
         self.rfid_frame = tk.Frame(self.bottom_frame)
         self.rfid_frame.grid(
-            row=0, column=0, padx=(40, 0), pady=0, sticky=STICKY_CENTER
+            row=0, column=0, columnspan=1, padx=(0, 0), pady=0, sticky=STICKY_CENTER
         )
 
         self.rfid_values = [tk.StringVar(value="0") for _ in range(4)]
@@ -390,9 +393,21 @@ class GUI:
             )
 
         self.depth_frame = tk.Label(self.bottom_frame)
-        self.depth_frame.grid(
-            row=0, column=1, columnspan=10, padx=0, pady=0, sticky=STICKY_CENTER
+        self.depth_frame.grid(row=0, column=1, columnspan=2, padx=0, pady=0)
+
+        self.timer_textbox = st.ScrolledText(
+            self.bottom_frame, wrap=tk.WORD, width=25, height=11, font=self.default_font
         )
+        self.timer_textbox.grid(row=0, column=3, columnspan=3, padx=0, pady=(0, 0))
+
+    def update_timer_textbox(self):
+        if not self.destroy:
+            timer_contents = ""
+            for name, elapsed in self.tracker.timer.get_all():
+                timer_contents += f"{name}: {elapsed:.2f}s\n"
+
+            self.timer_textbox.delete("1.0", tk.END)
+            self.timer_textbox.insert(tk.END, timer_contents)
 
     def draw_rounded_rectangle(self, canvas, x1, y1, x2, y2, radius=25, **kwargs):
         points = [
@@ -505,16 +520,13 @@ class GUI:
             row=5, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
-    start_time = time.time()
-    last_update_time_tracking = time.time()
-
     def init_timer(self):
         self.elapsed_start = 0.0
         self.elapsed_tracking = 0.0
 
     def formatted_time(self, id: int):
         label = ""
-        elapsed_time = time.time() - self.start_time
+        elapsed_time = self.timer.get_elapsed("active")
         if id == TIMER_ACTIVE:
             label = "ACTIVE"
         if id == TIMER_START:
@@ -540,24 +552,22 @@ class GUI:
     def update_timer(self):
         """some_conditionがTrueのときのみタイマーを加算する"""
         if not self.destroy:
-            current_time = time.time()
             enable_tracking = self.var_enable_tracking.get() and not self.tracker.stop
+
             # START
             if enable_tracking:
-                self.elapsed_start += current_time - self.last_update_time_start
-                self.last_update_time_start = current_time
-            else:
-                self.last_update_time_start = time.time()
+                self.elapsed_start += self.timer.get_elapsed("start")
+
+            self.timer.update("start")
 
             # TRACKING
             if enable_tracking and self.tracker.target_position not in (
                 Position.NONE,
                 Commands.STOP_TEMP,
             ):
-                self.elapsed_tracking += current_time - self.last_update_time_tracking
-                self.last_update_time_tracking = current_time
-            else:
-                self.last_update_time_tracking = time.time()
+                self.elapsed_tracking += self.timer.get_elapsed("tracking")
+
+            self.timer.update("tracking")
 
             self.label_timer_active.config(text=self.formatted_time(TIMER_ACTIVE))
             self.label_timer_start.config(text=self.formatted_time(TIMER_START))
@@ -1066,6 +1076,7 @@ class GUI:
         self.update_wheel()
         self.update_timer()
         self.update_status_label()
+        self.update_timer_textbox()
 
     def update_status_label(self):
         if not self.destroy:

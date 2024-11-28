@@ -3,6 +3,8 @@ import subprocess
 import traceback
 import psutil
 
+from timer import timer
+
 # カメラ起動高速化
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 
@@ -69,6 +71,8 @@ class Tracker:
         self.root: tk.Tk
         self.gui: gui.GUI
 
+        self.timer = timer()
+
         # Webカメラ関連
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.frame_width = FRAME_WIDTH
@@ -76,9 +80,6 @@ class Tracker:
 
         # 左右のモーター出力
         self.motor_power_l = self.motor_power_r = 0
-
-        # CHECKコマンド送信インターバル管理用
-        self.interval_serial_send_start_time = 0
 
         # RFID関連
         self.rfid_accessing = False
@@ -142,7 +143,7 @@ class Tracker:
         self.target: Optional[Target] = None
 
         # 最後に対象を見つけた時刻
-        self.target_last_seen_time = time.time()
+        self.timer.register("target_l_seen")
 
         # 対象を見失った回数
         self.missed_target_count = 0
@@ -160,6 +161,9 @@ class Tracker:
         # シリアル通信を一時切断中か
         self.disconnect = False
 
+        self.timer.register("serial_send", False)
+        self.timer.register("serial_send_motor", False)
+
         self.fps = 0
         self.total_fps = 0
         self.avr_fps = 0
@@ -172,7 +176,7 @@ class Tracker:
         self.stop_exec_cmd_gui = False
 
         # 1秒間にCHECKした回数記憶用
-        self.send_check_start_time = 0
+        self.timer.register("send_check")
         self.sent_count = 0
 
         # 初期化完了フラグ
@@ -185,10 +189,7 @@ class Tracker:
         self.find_target_rotate = False
 
         # 転回してから経過した時間
-        self.find_target_start_time = time.time()
-
-        # 後退してから経過した時間
-        self.obs_backoff_start_time = None
+        self.timer.register("find_target")
 
         self.init_detection_flags()
         self.init_obstacles_vals()
@@ -210,10 +211,10 @@ class Tracker:
         self.too_close_wall = False
 
         # 壁を避けた時刻
-        self.last_wall_avoid_time = time.time()
+        self.timer.register("l_w_avoid")
 
         # 壁を検出した時刻
-        self.last_wall_detect_time = time.time()
+        self.timer.register("l_w_detect")
 
         # 最後に検出した壁の位置
         self.last_wall_detect = Position.NONE
@@ -264,10 +265,6 @@ class Tracker:
         cv2.line(
             self.frame, (width - 1, 0), (width - 1, height), (0, 0, 255), thickness
         )
-
-    def elapsed_str(self, start_time):
-        """経過時間をミリ秒単位の文字列で取得"""
-        return "{}ms".format(math.floor((time.time() - start_time) * 1000))
 
     def print_d(self, text):
         """デバッグ情報をフレームに描画"""
@@ -517,14 +514,12 @@ class Tracker:
             self.gui.update_stop()
             self.send(Commands.START)
 
-    last_obstacle_time = time.time()
-
     def process_obstacles(self, detected_targets):
         """障害物の処理を行う"""
         if not DEBUG_USE_ONLY_WEBCAM and self.gui.var_enable_obstacles.get():
-            if time.time() - self.last_obstacle_time >= 0.1:
+            if self.timer.passed("l_obstacle", 0.1):
                 self._process_obstacles(detected_targets)
-                self.last_obstacle_time = time.time()
+                self.timer.update("l_obstacle")
         else:
             self.init_obstacles_vals()
 
@@ -556,20 +551,21 @@ class Tracker:
 
     def stop_if_no_targets_for_sec(self):
         # 一周しても見つからない場合は停止（音を鳴らすかも）
-        if self.stop_exec_cmd and time.time() - self.find_target_start_time > 8:
+        if self.stop_exec_cmd and self.timer.passed("find_target", 8):
             self.stop_exec_cmd = False
             self.send(Commands.STOP_TEMP)
 
     def main_loop(self):
         """メインループを実行"""
         logger.info("Starting main loop")
+        self.timer.register("frame", False)
 
         while True:
             if not self.initialized:
                 continue
 
             self.update_seg()
-            frame_start_time = time.time()
+            self.timer.update("frame")
             self.init_detection_flags()
             self.capture_frame()
             self.receive_distance()
@@ -591,7 +587,7 @@ class Tracker:
             self.update_rfid_power()
             self.send_commands_if_needed()
             self.receive_serial_data()
-            self.update_fps(frame_start_time)
+            self.update_fps()
             self.handle_disconnection()
             if self.gui.recording:
                 self.draw_red_border()
@@ -657,16 +653,16 @@ class Tracker:
 
     def process_targets(self):
         """対象の検出と追跡を処理"""
-        current_time = time.time()
-
-        detected_targets = self._detect_and_select_targets(current_time)
+        detected_targets = self._detect_and_select_targets()
+        key = "target_detection"
         if len(detected_targets) > 0:
             self.target = detected_targets[0]
-            if self.target_detection_start_time is None:
-                self.target_detection_start_time = current_time
+            if not self.timer.has(key):
+                self.timer.register(key)
             else:
-                self.time_detected = current_time - self.target_detection_start_time
+                self.time_detected = self.timer.get_elapsed(key)
         else:
+            self.timer.remove(key)
             self.target = None
 
         if len(detected_targets) > 0:
@@ -680,7 +676,7 @@ class Tracker:
 
         return detected_targets
 
-    def _detect_and_select_targets(self, current_time):
+    def _detect_and_select_targets(self):
         """対象を検出して選択する内部処理"""
         detected_targets = self.target_processor.detect_targets(
             self.frame, self.RFID_ONLY_MODE, self.RFID_ENABLED
@@ -702,17 +698,17 @@ class Tracker:
                             and self.lost_target_command == Commands.STOP_TEMP
                         )
                         or not self.RFID_ENABLED
-                        and time.time() - self.target_last_seen_time > 1
+                        and self.timer.passed("target_l_seen", 1)
                     ) and not self.missed_target:
                         self.missed_target = True
                         self.missed_target_count += 1
-                    self._handle_no_targets(current_time)
+                    self._handle_no_targets()
                 else:
                     self.missed_target = False
                     self.stop_temp = False
                     self.stop_exec_cmd = False
             else:
-                self._handle_no_targets(current_time)
+                self._handle_no_targets()
         elif not Commands.is_rotate(self.rfid_reader.get_direction()):
             self.stop_exec_cmd = False
 
@@ -730,7 +726,7 @@ class Tracker:
                 target_center_x, self.target_x, _ = result
                 self.target_position = self.get_target_pos_str(target_center_x)
                 if self.time_detected >= 0.3:
-                    self.target_last_seen_time = time.time()
+                    self.timer.update("target_l_seen")
                     self.stop_temp = False
 
         if self.RFID_ENABLED:
@@ -757,45 +753,42 @@ class Tracker:
     def exec_lost_target_command(self):
         """対象を見失った際のコマンドを実行"""
         self.send(self.lost_target_command)
-        self.find_target_start_time = time.time()
+        self.timer.update("find_target")
         self.stop_exec_cmd = True
         self.motor_power_l = 0
         self.motor_power_r = 0
 
     lost_target_avoid_wall = Position.NONE
 
-    force_avoid_wall_start_time = time.time()
-
-    def _handle_no_targets(self, current_time):
+    def _handle_no_targets(self):
         """対象が検出されなかった場合の処理を行う"""
         if (
             self.last_wall_detect != Position.NONE
             and Position.convert_to_rotate(self.last_wall_detect)
             == self.lost_target_command
-            and current_time - self.last_wall_avoid_time
-            < self.map_value_to_scale(self.default_speed)
+            and not self.timer.passed(
+                "l_w_avoid", self.map_value_to_scale(self.default_speed)
+            )
             and not self.find_target_rotate
         ):
             if self.lost_target_avoid_wall == Position.NONE:
                 self.lost_target_avoid_wall = self.last_wall_detect
             if self.lost_target_command == self.wall:
-                self.force_avoid_wall_start_time = time.time()
-            if (
-                self.lost_target_avoid_wall == self.wall
-                and time.time() - self.force_avoid_wall_start_time < 1.5
+                self.timer.update("force_avoid_wall")
+            if self.lost_target_avoid_wall == self.wall and not self.timer.passed(
+                "force_avoid_wall", 1.5
             ):
-                self.last_wall_avoid_time = time.time()
+                self.timer.update("l_w_avoid")
 
             self.tracking_target_invisible = True
             return
 
         self.last_wall_avoid = Position.NONE
 
-        if self.target_detection_start_time is not None:
-            self.target_detection_start_time = None
+        if self.timer.has("target_detection"):
+            self.timer.remove("target_detection")
 
-        time_since_last_seen = current_time - self.target_last_seen_time
-        if time_since_last_seen > 1.0 and not self.stop_temp:
+        if self.timer.passed("target_l_seen", 1) and not self.stop_temp:
             self.find_target_rotate = False
             if self.RFID_ENABLED:
                 self.apply_rfid_direction()
@@ -840,8 +833,6 @@ class Tracker:
             self.wall = bk_wall
             self.wall_parallel = Obstacles.OBS_PARALLEL_FULL
 
-    in_lost_detect_wall_time = time.time()
-
     def _update_wall_position(self, wall, bk_wall):
         """壁の位置に基づいて状態を更新"""
         if wall == Obstacles.OBS_CENTER:
@@ -863,14 +854,14 @@ class Tracker:
             and self.wall == bk_wall
             or self.wall == "BOTH"
         ):
-            self.last_wall_detect_time = time.time()
+            self.timer.update("l_w_detect")
 
         if not self.tracking_target_invisible or (
             (self.avoid_wall or self.wall_parallel)
             and self.tracking_target_invisible
             and self.wall == self.lost_target_avoid_wall
         ):
-            self.last_wall_avoid_time = time.time()
+            self.timer.update("l_w_avoid")
 
         if self.avoid_wall or (self.wall_parallel and not skip_parallel):
             self.last_wall_detect = self.wall
@@ -942,7 +933,7 @@ class Tracker:
                 self.send(Commands.STOP_TEMP)
             elif Commands.is_rotate(self.target_position):
                 self.stop_exec_cmd = True
-                self.find_target_start_time = time.time()
+                self.timer.update("find_target")
                 self.send(self.target_position)
                 self.lost_target_command = self.target_position
             elif self.target_position == Commands.GO_CENTER:
@@ -958,47 +949,40 @@ class Tracker:
 
     def send_commands_if_needed(self):
         """送信できるならモーター情報やCHECKを送信"""
-        current_time = time.time()
-        if (
-            current_time - self.interval_serial_send_start_time
-            > ROBOT_SERIAL_SEND_INTERVAL
-        ):
+        if self.timer.passed("serial_send", ROBOT_SERIAL_SEND_INTERVAL):
             self.sent_count += 1
-            self.interval_serial_send_start_time = current_time
+            self.timer.update("serial_send")
             ret, mid = self.send(Commands.GET_DISTANCE)
             if ret and mid != -1:
                 self.move_distance_id_list.append(mid)
 
         # 障害物が目の前なら、後退して転回
+        key = "obs_backoff"
         if (
             self.auto_stop_obs
             and self.is_close_obs
             and not self.stop_exec_cmd
             and self.gui.var_enable_tracking.get()
             and self.lost_target_command != Commands.STOP_TEMP
-            and self.obs_backoff_start_time == None
+            and not self.timer.has(key)
         ):
             self.stop_exec_cmd_gui = True
-            self.obs_backoff_start_time = time.time()
+            self.timer.register(key)
             self.send(Commands.GO_BACK)
 
         # 1.5秒後退したら転回
         if (
             self.stop_exec_cmd
-            and self.obs_backoff_start_time is not None
-            and time.time() - self.obs_backoff_start_time > 1.5
+            and self.timer.passed(key)
             and self.gui.var_enable_tracking.get()
         ):
             self.stop_exec_cmd_gui = False
-            self.obs_backoff_start_time = None
+            self.timer.remove(key)
             self.exec_lost_target_command()
 
         # インターバル経過したらモーター出力を送信
-        if (
-            current_time - self.interval_serial_send_motor_start_time
-            > ROBOT_SERIAL_SEND_MOTOR_INTERVAL
-        ):
-            self.interval_serial_send_motor_start_time = current_time
+        if self.timer.passed("serial_send_motor", ROBOT_SERIAL_SEND_MOTOR_INTERVAL):
+            self.timer.update("serial_send_motor")
             if (
                 not self.stop
                 and not self.stop_temp
@@ -1012,9 +996,9 @@ class Tracker:
                 self.bkr = self.motor_power_r
 
         # 1秒間に送信した確認コマンドをカウント
-        if current_time - self.send_check_start_time > 1:
+        if self.timer.passed("send_check", 1):
             self.sent_count = 0
-            self.send_check_start_time = current_time
+            self.timer.update("send_check")
 
     def receive_serial_data(self):
         """シリアル通信からデータを受信"""
@@ -1023,10 +1007,9 @@ class Tracker:
             self.gui.queue.add_all("r", received)
             self.received_serial = received[-1]
 
-    def update_fps(self, frame_start_time):
+    def update_fps(self):
         """FPS（フレーム毎秒）を更新"""
-        fps_end_time = time.time()
-        time_taken = fps_end_time - frame_start_time
+        time_taken = self.timer.get_elapsed("frame")
         if time_taken > 0:
             self.fps = 1 / time_taken
 
@@ -1057,9 +1040,9 @@ class Tracker:
     def update_debug_info(self):
         """デバッグ情報を更新し、フレームに描画"""
         delay_find_map = self.map_value_to_scale(self.default_speed)
-        delay_find = delay_find_map - (time.time() - self.last_wall_avoid_time)
+        delay_find = delay_find_map - self.timer.get_elapsed("l_w_avoid")
 
-        delay = time.time() - self.last_wall_detect_time
+        delay = self.timer.get_elapsed("l_w_detect")
 
         rfid_power = 0
         if self.rfid_reader:
@@ -1080,7 +1063,7 @@ class Tracker:
             f"connected: {self.serial.ser_connected} port: {ROBOT_SERIAL_PORT} baud: {ROBOT_SERIAL_BAUD} data: {self.serial.serial_sent}\n"
             f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
             f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
-            f"avoid: {self.avoid_wall} no_detection: {round(time.time() - self.target_last_seen_time, 2):.2f} "
+            f"avoid: {self.avoid_wall} no_detection: {round(self.timer.get_elapsed('target_l_seen'), 2):.2f} "
             f"detecting: {round(self.time_detected, 2):.2f} track_out: {self.tracking_target_invisible}\n"
             f"RFID: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} RFID_Power: {rfid_power} def_spd: {self.default_speed} parallel: {self.wall_parallel}\n"
             f"auto_stop: {self.auto_stop} close: {self.is_close_obs} occupancy: {self.occupancy_ratio:.2%} exec_stop: {self.stop_exec_cmd}\n"
@@ -1111,7 +1094,7 @@ class Tracker:
         self.initialized = False
         if not re_init:
             logger.info("Starting up...")
-        time_startup = time.time()
+        self.timer.register("startup")
 
         if self.video_capture is not None:
             self.video_capture.release()
@@ -1139,16 +1122,13 @@ class Tracker:
             )
             self.rfid_reader.start_reading()
 
-        self.target_detection_start_time = None
+        self.target_detection = None
         self.time_detected = 0
         self.prev_command = Commands.STOP_TEMP
 
         self.max_motor_power_threshold = self.frame_width / 4
         self.motor_power_l, self.motor_power_r = 0, 0
 
-        self.interval_serial_send_start_time = 0
-        self.interval_serial_send_motor_start_time = 0
-        self.send_check_start_time = 0
         self.occupancy_ratio = 0
         self.is_close_obs = False
 
@@ -1156,8 +1136,11 @@ class Tracker:
         self.sent_count = 0
 
         logger.info(
-            "Startup completed. Elapsed time: {}".format(self.elapsed_str(time_startup))
+            "Startup completed. Elapsed time: {}".format(
+                timer.elapsed_str(self.timer.get_start_time("startup"))
+            )
         )
+        self.timer.remove("startup")
 
         if not re_init:
             self.start_loop_serial()

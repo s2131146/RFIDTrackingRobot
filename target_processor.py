@@ -344,7 +344,7 @@ class TargetProcessor:
             self.tracker.default_speed = self.update_speed_based_on_distance()
 
             if self.tracker.occupancy_ratio >= self.tracker.AUTO_STOP_OCCUPANCY_RATIO:
-                if not self.tracker.auto_stop:
+                if not self.tracker.auto_stop and not self.tracker.stop:
                     self.tracker.auto_stop = True
                     self.tracker.stop_motor()
             else:
