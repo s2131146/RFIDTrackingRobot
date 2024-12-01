@@ -73,6 +73,8 @@ class Commands:
     RESET_DISTANCE: ClassVar[str] = "RD"
     TURN_LEFT: ClassVar[str] = "TL"
     TURN_RIGHT: ClassVar[str] = "TR"
+    L_SPEED_REV: ClassVar[str] = "L_R"
+    R_SPEED_REV: ClassVar[str] = "R_R"
 
     DISCONNECT: ClassVar[str] = "DC"
     DEBUG_PID_INIT: ClassVar[str] = "PID"

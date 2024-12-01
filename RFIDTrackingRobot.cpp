@@ -309,6 +309,12 @@ namespace RFIDTR {
         else if (command == Commands::R_SPEED) {
             setRightMotorSpeed(value);
         }
+        else if (command == Commands::L_SPEED_REV) {
+            setLeftMotorSpeed(value, true);
+        }
+        else if (command == Commands::R_SPEED_REV) {
+            setRightMotorSpeed(value, true);
+        }
         else if (command == Commands::START) {
             stop();
             Serial.println("Motors started.");

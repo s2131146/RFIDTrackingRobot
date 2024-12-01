@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import subprocess
@@ -11,7 +12,7 @@ import logger
 
 from datetime import datetime
 from tkinter import scrolledtext as st, ttk, font
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 from constants import Commands, Position
 
 from timer import timer
@@ -38,6 +39,8 @@ FFMPEG_PATH = "ffmpeg/ffmpeg.exe"
 TIMER_ACTIVE = 0
 TIMER_START = 1
 TIMER_TRACKING = 2
+
+JOYSTICK = True
 
 
 class GUI:
@@ -609,6 +612,170 @@ class GUI:
                 text=f"VCR: {0.00 if not self.elapsed_tracking or not self.elapsed_start else (self.elapsed_tracking / self.elapsed_start * 100):.2f}%"
             )
 
+    def create_joystick(self):
+        joystick_size = 167  # 全体サイズ
+        knob_radius = 20  # ノブの半径
+        bg_radius = joystick_size // 2 - 10  # 背景円の半径
+        center = joystick_size // 2
+
+        self.joystick_frame = tk.Frame(self.controller_frame)
+        self.joystick_frame.grid(row=2, column=1)
+
+        # Pillowを使用してアンチエイリアス円を作成
+        bg_image = Image.new("RGBA", (joystick_size, joystick_size), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(bg_image)
+        draw.ellipse(
+            (
+                center - bg_radius,
+                center - bg_radius,
+                center + bg_radius,
+                center + bg_radius,
+            ),
+            fill="#d3d3d3",
+        )
+
+        # Tkinter用に変換
+        self.bg_image_tk = ImageTk.PhotoImage(bg_image)
+
+        # キャンバスを作成
+        self.joystick_canvas = tk.Canvas(
+            self.joystick_frame,
+            width=joystick_size,
+            height=joystick_size,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.joystick_canvas.grid(row=0, column=0, padx=0, pady=0)
+
+        # 背景円を描画
+        self.joystick_canvas.create_image(0, 0, anchor=tk.NW, image=self.bg_image_tk)
+
+        # ノブ（中央の円）を描画
+        self.knob = self.joystick_canvas.create_oval(
+            center - knob_radius,
+            center - knob_radius,
+            center + knob_radius,
+            center + knob_radius,
+            fill="blue",
+        )
+
+        self.joystick_center = (center, center)
+        self.knob_radius = knob_radius
+        self.bg_radius = bg_radius
+        self.joystick_radius = joystick_size // 2 - 10
+
+        # マウスイベントをバインド
+        self.joystick_canvas.bind("<B1-Motion>", self.move_knob)
+        self.joystick_canvas.bind("<ButtonRelease-1>", self.reset_knob)
+
+        self.timer.register("knob", show=False)
+
+    def move_knob(self, event):
+        self.tracker.stop_exec_cmd_gui = True
+
+        if self.tracker.default_speed != 200:
+            self.tracker.default_speed = 200
+            self.tracker.start_motor()
+            self.tracker.send((Commands.SET_DEFAULT_SPEED, 200))
+
+        # ノブの中心を計算
+        x, y = event.x, event.y
+        dx = x - self.joystick_center[0]
+        dy = y - self.joystick_center[1]
+        distance = math.sqrt(dx**2 + dy**2)
+        max_distance = self.joystick_radius - self.knob_radius  # ノブの移動可能範囲
+
+        # ノブの移動範囲を制限
+        if distance > max_distance:
+            scale = max_distance / distance
+            dx *= scale
+            dy *= scale
+            x = self.joystick_center[0] + dx
+            y = self.joystick_center[1] + dy
+
+        # ノブの位置を更新
+        self.joystick_canvas.coords(
+            self.knob,
+            x - self.knob_radius,
+            y - self.knob_radius,
+            x + self.knob_radius,
+            y + self.knob_radius,
+        )
+
+        # 角度と速度を計算
+        angle = math.atan2(dy, dx)  # ラジアン
+        normalized_distance = min(distance / max_distance, 1)  # 正規化 0~1
+        speed_percentage = int(normalized_distance * 100)  # 速度（%）
+
+        # 左右モーターの速度を計算
+        left_speed = 0
+        right_speed = 0
+
+        command = 3
+
+        # 動作の種類を決定
+        if angle > -1.7 and angle < -1.3:  # 前進
+            left_speed = speed_percentage
+            right_speed = speed_percentage
+            command = 1
+        elif angle < -1.7 and angle > -2.95:  # 左回転（前進方向）
+            left_speed = speed_percentage * (
+                1 - abs(angle + math.pi / 2) / (math.pi / 2)
+            )
+            right_speed = speed_percentage
+            command = 1
+        elif angle > -1.3 and angle < -0.15:  # 右回転（前進方向）
+            left_speed = speed_percentage
+            right_speed = speed_percentage * (
+                1 - abs(angle + math.pi / 2) / (math.pi / 2)
+            )
+            command = 1
+        elif angle > 1.4 and angle < 1.7:  # 後退
+            left_speed = speed_percentage
+            right_speed = speed_percentage
+            command = 2
+        elif angle > 1.7 and angle < 3:  # 左回転（後退方向）
+            left_speed = speed_percentage * (
+                1 - abs(-angle + math.pi / 2) / (math.pi / 2)
+            )
+            right_speed = speed_percentage
+            command = 2
+        elif angle < 1.4 and angle > 0.15:  # 右回転（後退方向）
+            left_speed = speed_percentage
+            right_speed = speed_percentage * (
+                1 - abs(-angle + math.pi / 2) / (math.pi / 2)
+            )
+            command = 2
+        elif angle < -2.95:
+            command = 3
+        elif angle < 0.15:
+            command = 4
+
+        # コマンドを送信
+        if self.timer.passed("knob", 0.3, update=True):  # コマンド送信間隔を調整
+            if command == 1:  # 前進
+                self.tracker.send((Commands.L_SPEED, abs(int(left_speed))))
+                self.tracker.send((Commands.R_SPEED, abs(int(right_speed))))
+            elif command == 2:  # 後退
+                self.tracker.send((Commands.L_SPEED_REV, abs(int(left_speed))))
+                self.tracker.send((Commands.R_SPEED_REV, abs(int(right_speed))))
+            elif command == 3:  # 左回転
+                self.tracker.send(Commands.ROTATE_LEFT)
+            elif command == 4:  # 右回転
+                self.tracker.send(Commands.ROTATE_RIGHT)
+
+    def reset_knob(self, _):
+        self.joystick_canvas.coords(
+            self.knob,
+            self.joystick_center[0] - self.knob_radius,
+            self.joystick_center[1] - self.knob_radius,
+            self.joystick_center[0] + self.knob_radius,
+            self.joystick_center[1] + self.knob_radius,
+        )
+
+        self.tracker.stop_exec_cmd_gui = False
+        self.tracker.send(Commands.STOP)
+
     def create_control_panel(self):
         self.button_panel_frame = tk.Frame(self.control_frame)
         self.button_panel_frame.grid(
@@ -683,174 +850,181 @@ class GUI:
             row=12, column=0, columnspan=3, sticky=STICKY_CENTER, padx=5, pady=5
         )
 
-        # グリッドを設定して十字型にボタンを配置
-        for i in range(3):
-            self.controller_frame.grid_rowconfigure(i, weight=1)
-            self.controller_frame.grid_columnconfigure(i, weight=1)
+        if JOYSTICK:
+            self.create_joystick()
+        else:
+            # グリッドを設定して十字型にボタンを配置
+            for i in range(3):
+                self.controller_frame.grid_rowconfigure(i, weight=1)
+                self.controller_frame.grid_columnconfigure(i, weight=1)
 
-        arrow_font = font.Font(family="Consolas", size=12, weight="bold")
-        button_height = 2
-        button_width = 6
+            arrow_font = font.Font(family="Consolas", size=12, weight="bold")
+            button_height = 2
+            button_width = 6
 
-        button_row_top = 1
-        button_row_bottom = 2
+            button_row_top = 1
+            button_row_bottom = 2
 
-        # 左回転ボタン
-        self.button_rotate_left = tk.Button(
-            self.controller_frame,
-            text="↺",  # Unicodeの反時計回りの回転矢印
-            width=button_width,
-            height=button_height,
-            font=arrow_font,
-            bg="SystemButtonFace",
-            activebackground="green",
-            borderwidth=4,  # ボタンの境界線幅を増加
-            relief="solid",  # 境界線を実線に設定
-            highlightbackground="black",  # ハイライト背景色を黒に設定
-            highlightcolor="black",  # ハイライト色を黒に設定
-            highlightthickness=2,  # ハイライトの厚さを設定
-            command=None,  # イベントで制御
-        )
-        self.button_rotate_left.grid(row=button_row_top, column=0, padx=5, pady=5)
+            # 左回転ボタン
+            self.button_rotate_left = tk.Button(
+                self.controller_frame,
+                text="↺",  # Unicodeの反時計回りの回転矢印
+                width=button_width,
+                height=button_height,
+                font=arrow_font,
+                bg="SystemButtonFace",
+                activebackground="green",
+                borderwidth=4,  # ボタンの境界線幅を増加
+                relief="solid",  # 境界線を実線に設定
+                highlightbackground="black",  # ハイライト背景色を黒に設定
+                highlightcolor="black",  # ハイライト色を黒に設定
+                highlightthickness=2,  # ハイライトの厚さを設定
+                command=None,  # イベントで制御
+            )
+            self.button_rotate_left.grid(row=button_row_top, column=0, padx=5, pady=5)
 
-        # 右回転ボタン
-        self.button_rotate_right = tk.Button(
-            self.controller_frame,
-            text="↻",  # Unicodeの時計回りの回転矢印
-            width=button_width,
-            height=button_height,
-            font=arrow_font,
-            bg="SystemButtonFace",
-            activebackground="green",
-            borderwidth=4,  # ボタンの境界線幅を増加
-            relief="solid",  # 境界線を実線に設定
-            highlightbackground="black",  # ハイライト背景色を黒に設定
-            highlightcolor="black",  # ハイライト色を黒に設定
-            highlightthickness=2,  # ハイライトの厚さを設定
-            command=None,  # イベントで制御
-        )
-        self.button_rotate_right.grid(row=button_row_top, column=2, padx=5, pady=5)
+            # 右回転ボタン
+            self.button_rotate_right = tk.Button(
+                self.controller_frame,
+                text="↻",  # Unicodeの時計回りの回転矢印
+                width=button_width,
+                height=button_height,
+                font=arrow_font,
+                bg="SystemButtonFace",
+                activebackground="green",
+                borderwidth=4,  # ボタンの境界線幅を増加
+                relief="solid",  # 境界線を実線に設定
+                highlightbackground="black",  # ハイライト背景色を黒に設定
+                highlightcolor="black",  # ハイライト色を黒に設定
+                highlightthickness=2,  # ハイライトの厚さを設定
+                command=None,  # イベントで制御
+            )
+            self.button_rotate_right.grid(row=button_row_top, column=2, padx=5, pady=5)
 
-        # 上ボタン
-        self.button_up = tk.Button(
-            self.controller_frame,
-            text="↑",
-            width=button_width,
-            height=button_height,
-            font=arrow_font,
-            bg="SystemButtonFace",
-            activebackground="green",
-            borderwidth=4,  # ボタンの境界線幅を増加
-            relief="solid",  # 境界線を実線に設定
-            highlightbackground="black",  # ハイライト背景色を黒に設定
-            highlightcolor="black",  # ハイライト色を黒に設定
-            highlightthickness=2,  # ハイライトの厚さを設定
-            command=None,  # イベントで制御
-        )
-        self.button_up.grid(row=button_row_top, column=1, padx=5, pady=5)
+            # 上ボタン
+            self.button_up = tk.Button(
+                self.controller_frame,
+                text="↑",
+                width=button_width,
+                height=button_height,
+                font=arrow_font,
+                bg="SystemButtonFace",
+                activebackground="green",
+                borderwidth=4,  # ボタンの境界線幅を増加
+                relief="solid",  # 境界線を実線に設定
+                highlightbackground="black",  # ハイライト背景色を黒に設定
+                highlightcolor="black",  # ハイライト色を黒に設定
+                highlightthickness=2,  # ハイライトの厚さを設定
+                command=None,  # イベントで制御
+            )
+            self.button_up.grid(row=button_row_top, column=1, padx=5, pady=5)
 
-        # 下ボタン
-        self.button_down = tk.Button(
-            self.controller_frame,
-            text="↓",
-            width=button_width,
-            height=button_height,
-            font=arrow_font,
-            bg="SystemButtonFace",
-            activebackground="green",
-            borderwidth=4,
-            relief="solid",
-            highlightbackground="black",
-            highlightcolor="black",
-            highlightthickness=2,
-            command=None,
-        )
-        self.button_down.grid(row=button_row_bottom, column=1, padx=5, pady=5)
+            # 下ボタン
+            self.button_down = tk.Button(
+                self.controller_frame,
+                text="↓",
+                width=button_width,
+                height=button_height,
+                font=arrow_font,
+                bg="SystemButtonFace",
+                activebackground="green",
+                borderwidth=4,
+                relief="solid",
+                highlightbackground="black",
+                highlightcolor="black",
+                highlightthickness=2,
+                command=None,
+            )
+            self.button_down.grid(row=button_row_bottom, column=1, padx=5, pady=5)
 
-        # 左ボタン
-        self.button_left = tk.Button(
-            self.controller_frame,
-            text="←",
-            width=button_width,
-            height=button_height,
-            font=arrow_font,
-            bg="SystemButtonFace",
-            activebackground="green",
-            borderwidth=4,
-            relief="solid",
-            highlightbackground="black",
-            highlightcolor="black",
-            highlightthickness=2,
-            command=None,
-        )
-        self.button_left.grid(row=button_row_bottom, column=0, padx=5, pady=5)
+            # 左ボタン
+            self.button_left = tk.Button(
+                self.controller_frame,
+                text="←",
+                width=button_width,
+                height=button_height,
+                font=arrow_font,
+                bg="SystemButtonFace",
+                activebackground="green",
+                borderwidth=4,
+                relief="solid",
+                highlightbackground="black",
+                highlightcolor="black",
+                highlightthickness=2,
+                command=None,
+            )
+            self.button_left.grid(row=button_row_bottom, column=0, padx=5, pady=5)
 
-        # 右ボタン
-        self.button_right = tk.Button(
-            self.controller_frame,
-            text="→",
-            width=button_width,
-            height=button_height,
-            font=arrow_font,
-            bg="SystemButtonFace",
-            activebackground="green",
-            borderwidth=4,
-            relief="solid",
-            highlightbackground="black",
-            highlightcolor="black",
-            highlightthickness=2,
-            command=None,
-        )
-        self.button_right.grid(row=button_row_bottom, column=2, padx=5, pady=5)
+            # 右ボタン
+            self.button_right = tk.Button(
+                self.controller_frame,
+                text="→",
+                width=button_width,
+                height=button_height,
+                font=arrow_font,
+                bg="SystemButtonFace",
+                activebackground="green",
+                borderwidth=4,
+                relief="solid",
+                highlightbackground="black",
+                highlightcolor="black",
+                highlightthickness=2,
+                command=None,
+            )
+            self.button_right.grid(row=button_row_bottom, column=2, padx=5, pady=5)
 
-        # ボタン押下時のイベントをバインド
-        self.button_up.bind("<ButtonPress-1>", lambda e: self.start_moving(CONTROL_UP))
-        self.button_up.bind("<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_UP))
+            # ボタン押下時のイベントをバインド
+            self.button_up.bind(
+                "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_UP)
+            )
+            self.button_up.bind(
+                "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_UP)
+            )
 
-        self.button_down.bind(
-            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_DOWN)
-        )
-        self.button_down.bind(
-            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_DOWN)
-        )
+            self.button_down.bind(
+                "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_DOWN)
+            )
+            self.button_down.bind(
+                "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_DOWN)
+            )
 
-        self.button_left.bind(
-            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_LEFT)
-        )
-        self.button_left.bind(
-            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_LEFT)
-        )
+            self.button_left.bind(
+                "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_LEFT)
+            )
+            self.button_left.bind(
+                "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_LEFT)
+            )
 
-        self.button_right.bind(
-            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_RIGHT)
-        )
-        self.button_right.bind(
-            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_RIGHT)
-        )
+            self.button_right.bind(
+                "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_RIGHT)
+            )
+            self.button_right.bind(
+                "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_RIGHT)
+            )
 
-        self.button_rotate_left.bind(
-            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_ROTATE_LEFT)
-        )
-        self.button_rotate_left.bind(
-            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_ROTATE_LEFT)
-        )
+            self.button_rotate_left.bind(
+                "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_ROTATE_LEFT)
+            )
+            self.button_rotate_left.bind(
+                "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_ROTATE_LEFT)
+            )
 
-        self.button_rotate_right.bind(
-            "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_ROTATE_RIGHT)
-        )
-        self.button_rotate_right.bind(
-            "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_ROTATE_RIGHT)
-        )
+            self.button_rotate_right.bind(
+                "<ButtonPress-1>", lambda e: self.start_moving(CONTROL_ROTATE_RIGHT)
+            )
+            self.button_rotate_right.bind(
+                "<ButtonRelease-1>", lambda e: self.stop_moving(CONTROL_ROTATE_RIGHT)
+            )
 
-        # 移動中かどうかのフラグ
-        self.moving = {
-            CONTROL_UP: False,
-            CONTROL_DOWN: False,
-            CONTROL_LEFT: False,
-            CONTROL_RIGHT: False,
-            CONTROL_ROTATE_LEFT: False,
-            CONTROL_ROTATE_RIGHT: False,
-        }
+            # 移動中かどうかのフラグ
+            self.moving = {
+                CONTROL_UP: False,
+                CONTROL_DOWN: False,
+                CONTROL_LEFT: False,
+                CONTROL_RIGHT: False,
+                CONTROL_ROTATE_LEFT: False,
+                CONTROL_ROTATE_RIGHT: False,
+            }
 
     default_speed_bk = 0
 

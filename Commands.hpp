@@ -71,6 +71,8 @@ public:
     static const String RESET_DISTANCE;
     static const String TURN_LEFT;
     static const String TURN_RIGHT;
+    static const String L_SPEED_REV;
+    static const String R_SPEED_REV;
     
     // 指定されたコマンドが無視リストに含まれているかを判定
     static bool is_ignore(const String &cmd)
@@ -118,5 +120,7 @@ const String Commands::GET_DISTANCE = "D";
 const String Commands::RESET_DISTANCE = "RD";
 const String Commands::TURN_LEFT = "TL";
 const String Commands::TURN_RIGHT = "TR";
+const String Commands::L_SPEED_REV = "L_R";
+const String Commands::R_SPEED_REV = "R_R";
 
 #endif // COMMANDS_HPP

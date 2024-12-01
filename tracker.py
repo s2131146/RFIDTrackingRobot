@@ -998,7 +998,9 @@ class Tracker:
 
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
-        if self.gui.var_slow.get() or self.mode == self.Mode.RFID_ONLY.name:
+        if (self.gui.var_slow.get() or self.mode == self.Mode.RFID_ONLY.name) and (
+            not self.stop_exec_cmd_gui and self.default_speed != DEBUG_SLOW_SPEED
+        ):
             self.default_speed = DEBUG_SLOW_SPEED
         if self._def_spd_bk != self.default_speed:
             self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
