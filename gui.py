@@ -33,7 +33,7 @@ CONTROL_ROTATE_RIGHT = "rr"
 CONTROL_ROTATE_LEFT = "lr"
 
 AVI_NAME = "tracker.avi"
-FFMPEG_PATH = "C:/Users/admin/Downloads/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"
+FFMPEG_PATH = "ffmpeg/ffmpeg.exe"
 
 TIMER_ACTIVE = 0
 TIMER_START = 1
@@ -64,6 +64,7 @@ class GUI:
         self.var_auto_scroll_sent = tk.IntVar(value=1)
 
         self.init_timer()
+        self.register_timer()
 
         self.create_main_frame()
         self.create_control_frame()
@@ -77,8 +78,13 @@ class GUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        self.timer.register("active", False)
         self.queue.add("init")
+
+    def register_timer(self):
+        self.timer.register("active", show=False)
+        self.timer.register("gui_update", show=False)
+        self.timer.register("start", show=False)
+        self.timer.register("tracking", show=False)
 
     def start_recording(self):
         self.progress_var = tk.DoubleVar()
@@ -88,15 +94,17 @@ class GUI:
         self.recording_thread.start()
 
     def stop_recording(self):
-        self.recording = False
-        if self.recording_thread is not None:
-            self.recording_thread.join()
-            threading.Thread(target=self.start_conversion, daemon=True).start()
+        if not self.converting:
+            self.recording = False
+            if self.recording_thread is not None:
+                time.sleep(0.5)
+                threading.Thread(target=self.start_conversion, daemon=True).start()
 
     def on_closing(self):
-        self.__del__()
-        if self.recording:
-            self.stop_recording()
+        if not self.converting:
+            self.__del__()
+            if self.recording:
+                self.stop_recording()
 
     def record_screen(self):
         width = self.root.winfo_width()
@@ -174,10 +182,21 @@ class GUI:
 
         self.root.update_idletasks()
 
+    try_convert_count = 0
+    converting = False
+
     def start_conversion(self):
-        frames = self.get_total_frames(AVI_NAME)
-        if frames is None:
+        if self.converting:
             return
+        self.converting = True
+        frames = self.get_total_frames(AVI_NAME)
+        if not frames:
+            if self.try_convert_count > 5:
+                logger.logger.error("Failed to save video.")
+                return
+            time.sleep(1)
+            self.try_convert_count += 1
+            self.start_conversion()
         self.compress_and_convert_to_mp4(frames)
 
     def get_total_frames(self, input_file):
@@ -221,10 +240,13 @@ class GUI:
                     self.root.after(
                         0,
                         lambda frame=current_frame: self.progress_var.set(
-                            int(min(frame / frames * 100, 100))
+                            0
+                            if frame == 0 or frames == 0
+                            else int(min(frame / frames * 100, 100))
                         ),
                     )
 
+        self.converting = False
         self.root.after(0, self.progress_win.destroy)
 
         if os.path.exists(AVI_NAME):
@@ -257,9 +279,14 @@ class GUI:
         self.bottom_frame.grid_columnconfigure(2, weight=1)
         self.bottom_frame.grid_columnconfigure(3, weight=1)
 
+        self.config_frame = tk.Frame(self.main_frame)
+        self.config_frame.grid(
+            row=2, column=0, padx=DEF_MARGIN, pady=(0, DEF_MARGIN), sticky=STICKY_CENTER
+        )
+
         self.var_enable_tracking = tk.IntVar(value=tracker.DEBUG_ENABLE_TRACKING)
         self.enable_tracking_checkbox = tk.Checkbutton(
-            self.bottom_frame, text="Enable tracking", variable=self.var_enable_tracking
+            self.config_frame, text="Enable tracking", variable=self.var_enable_tracking
         )
         self.enable_tracking_checkbox.grid(
             row=1, column=0, padx=0, pady=0, sticky=STICKY_LEFT
@@ -267,7 +294,7 @@ class GUI:
 
         self.var_enable_obstacles = tk.IntVar(value=tracker.DEBUG_DETECT_OBSTACLES)
         self.enable_obstacles_checkbox = tk.Checkbutton(
-            self.bottom_frame,
+            self.config_frame,
             text="Detect obstacles",
             variable=self.var_enable_obstacles,
         )
@@ -277,7 +304,7 @@ class GUI:
 
         self.var_slow = tk.IntVar(value=tracker.DEBUG_SLOW_MOTOR)
         self.slow_checkbox = tk.Checkbutton(
-            self.bottom_frame,
+            self.config_frame,
             text="Slow Mode",
             variable=self.var_slow,
         )
@@ -285,12 +312,18 @@ class GUI:
 
         self.var_enable_serial = tk.IntVar(value=1)
         self.serial_checkbox = tk.Checkbutton(
-            self.bottom_frame,
+            self.config_frame,
             text="Enable Serial",
             variable=self.var_enable_serial,
             command=self.update_enable_serial,
         )
         self.serial_checkbox.grid(row=1, column=3, padx=0, pady=0, sticky=STICKY_LEFT)
+
+        self.var_enable_beep = tk.IntVar(value=1)
+        self.beep_checkbox = tk.Checkbutton(
+            self.config_frame, text="Beep Sound", variable=self.var_enable_beep
+        )
+        self.beep_checkbox.grid(row=1, column=4, padx=0, pady=0, sticky=STICKY_LEFT)
 
         self.label_wheel = tk.Label(self.bottom_frame)
         self.label_wheel.grid(
@@ -401,7 +434,7 @@ class GUI:
         self.timer_textbox.grid(row=0, column=3, columnspan=3, padx=0, pady=(0, 0))
 
     def update_timer_textbox(self):
-        if not self.destroy:
+        if not self.destroy and self.timer.passed("gui_update", 0.05, update=True):
             timer_contents = ""
             for name, elapsed in self.tracker.timer.get_all():
                 timer_contents += f"{name}: {elapsed:.2f}s\n"
@@ -1038,6 +1071,8 @@ class GUI:
             self.root.configure(bg="SystemButtonFace")
 
     def command_stop_start(self):
+        self.tracker.lost_target_command = Commands.STOP_TEMP
+        self.tracker.lost_target_avoid_wall = Position.NONE
         if self.tracker.stop:
             self.tracker.start_motor()
         else:
@@ -1123,9 +1158,10 @@ class GUI:
             self.tracker.send(Commands.RESET_DISTANCE)
             self.start_recording()
         else:
-            self.tracker.stop_motor()
-            self.stop_recording()
-            self.rec_button.config(text="RECORD", fg="green")
+            if not self.converting:
+                self.tracker.stop_motor()
+                self.stop_recording()
+                self.rec_button.config(text="RECORD", fg="green")
 
         self.update_status(f"Recording: {self.recording}")
 

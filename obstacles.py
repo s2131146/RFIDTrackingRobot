@@ -1,12 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
-import time
 from typing import ClassVar, Counter, List, Optional, Tuple
 import cv2
 import numpy as np
 import logging
 
-from constants import Commands
+from constants import Commands, Position
 from target_processor import Target
+from timer import timer
 
 
 class Obstacles:
@@ -24,8 +24,8 @@ class Obstacles:
 
     # 障害物の位置を示す定数を定義
     OBS_CENTER: ClassVar[str] = "CENTER"
-    OBS_LEFT: ClassVar[str] = "LEFT"
-    OBS_RIGHT: ClassVar[str] = "RIGHT"
+    OBS_LEFT: ClassVar[str] = Position.LEFT
+    OBS_RIGHT: ClassVar[str] = Position.RIGHT
     OBS_NONE: ClassVar[str] = "NONE"
     OBS_FULL: ClassVar[str] = "FULL"
     OBS_PARALLEL_FULL: ClassVar[str] = "FULL"
@@ -68,6 +68,8 @@ class Obstacles:
         self.frame_width = frame_width - 25
         self.frame_height = frame_height
 
+        self.timer = timer()
+
         # ロガーを設定
         self.logger = logger
 
@@ -81,7 +83,7 @@ class Obstacles:
         self.min_continuous_increase = min_continuous_increase
 
         # 障害物検出のインターバルを設定（秒単位）
-        self.detection_interval = 0.1
+        self.detection_interval = 0.5
 
         # 障害物の検出方向の履歴を保存するリスト
         self.directions_history = []
@@ -93,7 +95,7 @@ class Obstacles:
         self.avoid_walls_history = []
 
         # 前回の結果集計時刻を記録
-        self.last_detection_time = time.time()
+        self.timer.register("detection")
 
         # 最後に検出された障害物の方向
         self.last_direction = self.OBS_NONE
@@ -133,11 +135,11 @@ class Obstacles:
         self.central_end = int(self.frame_width * 0.6)
 
         # 左右の中央領域
-        self.left_center_start = self.central_start * 4 // 10
-        self.left_center_end = self.central_start * 6 // 10 + 30
+        self.left_center_start = self.central_start * 4 // 10 - 15
+        self.left_center_end = self.central_start * 6 // 10
         self.right_center_start = (
             self.central_end + (self.frame_width - self.central_end) * 4 // 10
-        ) - 30
+        ) + 15
         self.right_center_end = (
             self.central_end + (self.frame_width - self.central_end) * 6 // 10
         )
@@ -201,6 +203,7 @@ class Obstacles:
             depth_image, wall_mask, target_lost_command, targets
         )
         wall_parallel = wall_position[1]
+
         # 壁が特定の並行状態でない場合、wall_parallelをFalseに設定
         if not self.is_fix(wall_parallel) and wall_parallel != self.OBS_PARALLEL_FULL:
             wall_parallel = False
@@ -214,9 +217,16 @@ class Obstacles:
         self.wall_positions_history.append(wall_position)
 
         # 壁の深度を取得し、最も近い壁の深度を計算
-        valid_wall_depths = depth_image[(wall_mask) & (depth_image > 0)]
+        valid_wall_depths = depth_image[
+            (wall_mask)
+            & (depth_image > 0)
+            & (depth_image <= self.wall_distance_threshold)
+        ]
         closest_wall_depth = (
             np.min(valid_wall_depths) if valid_wall_depths.size > 0 else float("inf")
+        )
+        farthest_wall_depth = (
+            np.max(valid_wall_depths) if valid_wall_depths.size > 0 else float("inf")
         )
         too_close = closest_wall_depth <= self.CLOSE_THRESHOLD
         wall_in_center = np.logical_or(too_close, wall_in_center)
@@ -233,27 +243,46 @@ class Obstacles:
         central_mask[floor_mask[:, self.central_start : self.central_end]] = False
 
         # 一定間隔で結果を更新（ノイズ軽減）
-        current_time = time.time()
-        most_common_wall_position = self.last_wall_position
+        most_common_wall_position = wall_position
         most_common_avoid_wall = self.last_wall_avoid
-        most_common_wall_parallel = self.last_wall_parallel
-        if current_time - self.last_detection_time >= self.detection_interval:
+        most_common_wall_parallel = wall_parallel
+
+        if (
+            target_lost_command != Commands.STOP_TEMP
+            and Position.convert_to_rotate(most_common_wall_position)
+            != target_lost_command
+            and not most_common_avoid_wall
+        ):
+            most_common_wall_parallel = False
+            most_common_wall_position = Position.convert_to_pos(target_lost_command)
+
+        # INVERTになったら1秒間は継続
+        if most_common_wall_parallel == self.OBS_PARALLEL_FIX_INVERT:
+            self.timer.register("invert", update=True)
+        if self.timer.yet("invert", 0.7, remove=True) and not most_common_wall_parallel:
+            most_common_wall_parallel = self.OBS_PARALLEL_FIX_INVERT
+
+        # ノイズを考慮し、一瞬の壁は無視
+        if most_common_wall_position != self.last_wall_position:
+            self.timer.register("noise")
+            if self.timer.yet("noise", 0.1, remove=True):
+                most_common_wall_position = self.last_wall_position
+        else:
+            self.timer.remove("noise")
+
+        if self.timer.passed("detection", self.detection_interval, update=True):
             # 履歴から最も多い壁の位置を取得
             most_common_wall_position = Counter(
                 self.wall_positions_history
             ).most_common(1)[0][0]
-            self.last_wall_position = most_common_wall_position
 
             # 履歴から最も多い壁回避フラグを取得
             most_common_avoid_wall = Counter(self.avoid_walls_history).most_common(1)[
                 0
             ][0]
-            self.last_wall_avoid = most_common_avoid_wall
 
-            # 履歴から最も多い壁並行状態を取得
-            most_common_wall_parallel = Counter(self.wall_parallel_history).most_common(
-                1
-            )[0][0]
+            self.last_wall_avoid = most_common_avoid_wall
+            self.last_wall_position = most_common_wall_position
             self.last_wall_parallel = most_common_wall_parallel
 
             # 履歴をクリア
@@ -261,7 +290,6 @@ class Obstacles:
             self.wall_positions_history.clear()
             self.avoid_walls_history.clear()
             self.wall_parallel_history.clear()
-            self.last_detection_time = current_time
 
         # 壁回避が必要な場合の追加チェック
         if most_common_avoid_wall:
@@ -287,6 +315,10 @@ class Obstacles:
             ignore_x_end,
         )
 
+        # 最も遠い深度が500を切ったら、壁の終わりとして壁から離れる
+        if farthest_wall_depth < 500:
+            most_common_avoid_wall = True
+
         # 対象が中央にいる場合、障害物なしと判断して終了
         if center_target:
             return (
@@ -296,23 +328,12 @@ class Obstacles:
                 False,
                 False,
                 closest_wall_depth,
+                farthest_wall_depth,
             )
 
         # 目の前に全面的な障害物がある場合
-        if overall_direction:
+        if overall_direction and closest_wall_depth < 400:
             return self.OBS_FULL, obstacle_visual
-
-        # ターゲットのバウンディングボックスが中央領域と重なる場合
-        if targets:
-            if ignore_x_start < self.central_end and ignore_x_end > self.central_start:
-                return (
-                    obstacle_visual,
-                    most_common_wall_position,
-                    most_common_avoid_wall,
-                    most_common_wall_parallel,
-                    too_close,
-                    closest_wall_depth,
-                )
 
         # 最終結果を返す
         return (
@@ -322,6 +343,7 @@ class Obstacles:
             most_common_wall_parallel,
             too_close,
             closest_wall_depth,
+            farthest_wall_depth,
         )
 
     def determine_obstacle_position_full(
@@ -340,7 +362,7 @@ class Obstacles:
         # 障害物マスクのカバレッジ率を計算
         total_coverage = np.sum(wall_mask) / wall_mask.size
 
-        if (total_coverage >= 0.6 and close_depth <= 350) or total_coverage >= 0.8:
+        if (total_coverage >= 0.7 and close_depth <= 350) or total_coverage >= 0.8:
             return True
 
         return False
@@ -527,28 +549,25 @@ class Obstacles:
             and right_coverge > 0.1
         )
 
-        if left_parallel_center and right_parallel_center:
-            return self.OBS_CENTER, self.OBS_PARALLEL_FIX
-
         if wall_position == self.OBS_LEFT or (
             target_lost_command == Commands.ROTATE_LEFT and left_coverge > 0.1
         ):
             if left_parallel_center:
                 return self.OBS_LEFT, self.OBS_PARALLEL_FULL
-            elif left_parallel:
-                return self.OBS_LEFT, self.OBS_PARALLEL_FIX
             elif left_too_far:
                 return self.OBS_LEFT, self.OBS_PARALLEL_FIX_INVERT
+            else:
+                return self.OBS_LEFT, self.OBS_PARALLEL_FIX
 
         if wall_position == self.OBS_RIGHT or (
             target_lost_command == Commands.ROTATE_RIGHT and right_coverge > 0.1
         ):
             if right_parallel_center:
                 return self.OBS_RIGHT, self.OBS_PARALLEL_FULL
-            elif right_parallel:
-                return self.OBS_RIGHT, self.OBS_PARALLEL_FIX
             elif right_too_far:
                 return self.OBS_RIGHT, self.OBS_PARALLEL_FIX_INVERT
+            else:
+                return self.OBS_RIGHT, self.OBS_PARALLEL_FIX
 
         if left_parallel_center:
             return self.OBS_LEFT, self.OBS_PARALLEL_FULL
@@ -744,7 +763,6 @@ class Obstacles:
             step (int): 列の増分（1または-1）
         """
         # 壁として認識する深度の最大値と勾配閾値
-        depth_threshold = 1000  # 壁を検出する最大距離
         gradient_threshold = 0  # 勾配閾値（小さな変化を無視）
 
         for col in range(start_col, end_col, step):
@@ -753,7 +771,7 @@ class Obstacles:
             depth_values = depth_values[
                 (depth_values > 0)
                 & (depth_values < 0xFFFF)
-                & (depth_values <= depth_threshold)
+                & (depth_values <= self.wall_distance_threshold)
                 & (~floor_mask[:, col])
             ]
 
@@ -764,7 +782,7 @@ class Obstacles:
             # 深度の勾配を計算して急激な変化があれば壁と判断
             gradient = np.abs(np.diff(depth_values))
             valid_gradients = gradient[gradient < 0xEA60]
-            if np.mean(depth_values) < depth_threshold and np.any(
+            if np.mean(depth_values) < self.wall_distance_threshold and np.any(
                 valid_gradients > gradient_threshold
             ):
                 wall_mask[:, col] = True

@@ -58,61 +58,44 @@ int currentSpeed = DEFAULT_SPEED;
 const int TIME_APPLY_SPEED = 1500;
 
 namespace RFIDTR {
-    // 前回実行したコマンド
     String prevCommand = Commands::STOP;
+
     int rightSpeed;
     int leftSpeed;
-
-    // 目標速度
     int targetLeftSpeed = DEFAULT_SPEED;
     int targetRightSpeed = DEFAULT_SPEED;
-
-    // 現在の速度
     int currentLeftSpeed = 0;
     int currentRightSpeed = 0;
 
-    // 速度変更の開始時刻
     unsigned long leftSpeedChangeStartTime = 0;
     unsigned long rightSpeedChangeStartTime = 0;
 
-    // 速度変更の状態
     bool leftSpeedChanging = false;
     bool rightSpeedChanging = false;
 
-    // 速度変更のステップ数
     const int SPEED_CHANGE_STEPS = 10;
-    // 速度変更の間隔（ms）
     const unsigned long SPEED_CHANGE_INTERVAL = TIME_APPLY_SPEED / SPEED_CHANGE_STEPS;
 
-    // 速度変更のためのカウンタ
     int leftSpeedStep = 0;
     int rightSpeedStep = 0;
 
-    // ホイールの半径 (メートル)
     const float WHEEL_RADIUS = 1.155;
-    // 左右ホイール間の距離 (メートル)
     const float WHEEL_BASE = 0.3;
 
-    // 合計移動距離 (メートル)
     float totalDistance = 0.0;
-    // 前回の更新時刻 (ミリ秒)
     unsigned long lastUpdateTime = millis();
 
-    // 移動距離を計算する関数
     void calculateDistance() {
         unsigned long currentTime = millis();
-        float deltaTime = (currentTime - lastUpdateTime) / 1000.0; // 時間差 (秒)
+        float deltaTime = (currentTime - lastUpdateTime) / 1000.0;
         lastUpdateTime = currentTime;
 
-        // 左右モーターの現在の速度 (メートル/秒)
-        float leftSpeed = currentLeftSpeed * WHEEL_RADIUS / 1000.0;  // MMPS を MPS に変換
-        float rightSpeed = currentRightSpeed * WHEEL_RADIUS / 1000.0; // MMPS を MPS に変換
+        float leftSpeed = currentLeftSpeed * WHEEL_RADIUS / 1000.0;
+        float rightSpeed = currentRightSpeed * WHEEL_RADIUS / 1000.0;
 
-        // 線形速度と角速度を計算
         float linearVelocity = (leftSpeed + rightSpeed) / 2.0;
         float angularVelocity = (rightSpeed - leftSpeed) / WHEEL_BASE;
 
-        // 線形速度を基に合計移動距離を更新
         totalDistance += (linearVelocity * deltaTime);
     }
 
@@ -234,6 +217,7 @@ namespace RFIDTR {
         if (operationMode == PID) {
             leftSpeedChanging = false;
             rightSpeedChanging = false;
+            stop();
             setRightMotorSpeed(200, true, true);
             setLeftMotorSpeed(200, false, true);
         } else {
@@ -250,6 +234,32 @@ namespace RFIDTR {
             stop();
             setRightMotorSpeed(200, false, true);
             setLeftMotorSpeed(200, true, true);
+        } else {
+            attachAll();
+            wheels[MOTOR_LEFT].write(REVERSE);
+            wheels[MOTOR_RIGHT].write(FORWARD);
+        }
+    }
+
+    void turnRight() {
+        if (operationMode == PID) {
+            leftSpeedChanging = false;
+            rightSpeedChanging = false;
+            setRightMotorSpeed(40);
+            setLeftMotorSpeed(100);
+        } else {
+            attachAll();
+            wheels[MOTOR_LEFT].write(FORWARD);
+            wheels[MOTOR_RIGHT].write(REVERSE);
+        }
+    }
+
+    void turnLeft() {
+        if (operationMode == PID) {
+            leftSpeedChanging = false;
+            rightSpeedChanging = false;
+            setRightMotorSpeed(100);
+            setLeftMotorSpeed(40);
         } else {
             attachAll();
             wheels[MOTOR_LEFT].write(REVERSE);
@@ -333,6 +343,14 @@ namespace RFIDTR {
         else if (command == Commands::ROTATE_LEFT) {
             rotateLeft();
             Serial.println("Action: Rotate Left");
+        }
+        else if (command == Commands::TURN_LEFT) {
+            turnLeft();
+            Serial.println("Action: Turn Left");
+        }
+        else if (command == Commands::TURN_RIGHT) {
+            turnRight();
+            Serial.println("Action: Turn Right");
         }
 
         if (operationMode == PID) {
@@ -435,55 +453,48 @@ void loop() {
         RFIDTR::stop();
     }
 
-    // 左モーターの速度変更
     if (RFIDTR::leftSpeedChanging) {
         if (currentTime - RFIDTR::leftSpeedChangeStartTime >= RFIDTR::SPEED_CHANGE_INTERVAL) {
             RFIDTR::leftSpeedChangeStartTime = currentTime;
             RFIDTR::leftSpeedStep++;
 
-            // ステップごとの速度計算
             float stepFraction = (float)RFIDTR::leftSpeedStep / RFIDTR::SPEED_CHANGE_STEPS;
             if (stepFraction > 1.0) stepFraction = 1.0;
 
-            // 目標速度に向かって線形補間
-            RFIDTR::currentLeftSpeed = RFIDTR::currentLeftSpeed + (RFIDTR::targetLeftSpeed - RFIDTR::currentLeftSpeed) * stepFraction;
+            RFIDTR::currentLeftSpeed = RFIDTR::currentLeftSpeed + 
+                (RFIDTR::targetLeftSpeed - RFIDTR::currentLeftSpeed) * stepFraction;
 
-            // モーターに設定
-            Omni.wheelLeftSetSpeedMMPS(RFIDTR::currentLeftSpeed);
+            Omni.wheelLeftSetSpeedMMPS(abs(RFIDTR::currentLeftSpeed));
 
-            // ステップが完了したら速度変更を終了
             if (RFIDTR::leftSpeedStep >= RFIDTR::SPEED_CHANGE_STEPS) {
                 RFIDTR::leftSpeedChanging = false;
                 RFIDTR::currentLeftSpeed = RFIDTR::targetLeftSpeed;
-                Omni.wheelLeftSetSpeedMMPS(RFIDTR::currentLeftSpeed);
+                Omni.wheelLeftSetSpeedMMPS(abs(RFIDTR::currentLeftSpeed));
             }
         }
     }
 
-    // 右モーターの速度変更
     if (RFIDTR::rightSpeedChanging) {
         if (currentTime - RFIDTR::rightSpeedChangeStartTime >= RFIDTR::SPEED_CHANGE_INTERVAL) {
             RFIDTR::rightSpeedChangeStartTime = currentTime;
             RFIDTR::rightSpeedStep++;
 
-            // ステップごとの速度計算
             float stepFraction = (float)RFIDTR::rightSpeedStep / RFIDTR::SPEED_CHANGE_STEPS;
             if (stepFraction > 1.0) stepFraction = 1.0;
 
-            // 目標速度に向かって線形補間
-            RFIDTR::currentRightSpeed = RFIDTR::currentRightSpeed + (RFIDTR::targetRightSpeed - RFIDTR::currentRightSpeed) * stepFraction;
+            RFIDTR::currentRightSpeed = RFIDTR::currentRightSpeed + 
+                (RFIDTR::targetRightSpeed - RFIDTR::currentRightSpeed) * stepFraction;
 
-            // モーターに設定
-            Omni.wheelRightSetSpeedMMPS(RFIDTR::currentRightSpeed, DIR_BACKOFF);
+            Omni.wheelRightSetSpeedMMPS(abs(RFIDTR::currentRightSpeed), DIR_BACKOFF);
 
-            // ステップが完了したら速度変更を終了
             if (RFIDTR::rightSpeedStep >= RFIDTR::SPEED_CHANGE_STEPS) {
                 RFIDTR::rightSpeedChanging = false;
                 RFIDTR::currentRightSpeed = RFIDTR::targetRightSpeed;
-                Omni.wheelRightSetSpeedMMPS(RFIDTR::currentRightSpeed, DIR_BACKOFF);
+                Omni.wheelRightSetSpeedMMPS(abs(RFIDTR::currentRightSpeed), DIR_BACKOFF);
             }
         }
     }
+
 
     RFIDTR::calculateDistance();
 

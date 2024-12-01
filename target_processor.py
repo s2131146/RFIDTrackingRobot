@@ -67,7 +67,7 @@ class TargetProcessor:
         self.prev_command = Commands.STOP_TEMP
         self.last_target_features = None
         self.current_target = None
-        self.color_tolerance = 45
+        self.color_tolerance = 35
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
@@ -156,7 +156,7 @@ class TargetProcessor:
 
         return target_position
 
-    def select_target(self, detected_targets: List[Target]):
+    def select_target(self, detected_targets: List[Target], no_target: bool = False):
         """検出されたターゲットから追跡すべきターゲットを選択します。
 
         優先度:
@@ -180,9 +180,11 @@ class TargetProcessor:
         if not self.target_clothing_color:
             selected_target = self.select_closest_target(detected_targets)
         else:
-            # 既存の色に最も近いターゲットを選択
+            # 既存の色に最も近いターゲットを選択 (対象が見つからない場合は条件を緩める)
             selected_target = self.select_target_by_color(
-                detected_targets, self.target_clothing_color
+                detected_targets,
+                self.target_clothing_color,
+                80 if no_target else self.color_tolerance,
             )
 
         # 光や映っている範囲で色が変わるため、逐一更新
@@ -194,11 +196,13 @@ class TargetProcessor:
             self.current_target = selected_target
         else:
             self.current_target = None
+            if not no_target:
+                return self.select_target(detected_targets, no_target=True)
 
         return self.current_target
 
     def select_target_by_color(
-        self, targets: List[Target], target_color: Tuple[int, int, int]
+        self, targets: List[Target], target_color: Tuple[int, int, int], threshold: int
     ) -> Optional[Target]:
         """
         指定された色に最も近いターゲットを選択します。
@@ -208,8 +212,7 @@ class TargetProcessor:
         matching_targets = [
             t
             for t in targets
-            if self.color_distance(t.clothing_color_rgb, target_color)
-            <= self.color_tolerance
+            if self.color_distance(t.clothing_color_rgb, target_color) <= threshold
         ]
 
         # 一致するターゲットが存在しない場合
@@ -305,42 +308,26 @@ class TargetProcessor:
     def process_target(
         self, targets: List[Target], frame
     ) -> Optional[Tuple[int, int, List[Tuple[int, int, int, int]]]]:
-        """
-        画像中の対象を囲み、中心座標と占有率を取得
-
-        Args:
-            targets (List[Target]): 検出された対象のリスト
-            frame: MatLike
-
-        Returns:
-            Tuple[Optional[int], Optional[int], List[Tuple[int, int, int, int]]]: (target_center_x, target_x, target_bboxes)
-        """
         target_bboxes = []
         selected_target = None
 
         if len(targets) == 0:
             return None
 
-        # 特徴に基づくターゲット選択
         if self.last_target_features:
             selected_target = self.select_target_by_features(
                 targets, self.last_target_features
             )
 
-        # 特徴に一致するターゲットが見つからなかった場合、最も近いターゲットを選択
         if not selected_target:
             selected_target = self.select_closest_target(targets)
 
         if selected_target:
-            # 選択されたターゲットの処理
             target_center_x = selected_target.center_x
             target_x = math.floor(target_center_x - self.frame_width / 2)
-
-            # バウンディングボックスの面積を計算
             bbox_area = selected_target.area
             frame_area = self.frame_width * self.frame_height
-            self.tracker.occupancy_ratio = bbox_area / frame_area  # 占有率
-
+            self.tracker.occupancy_ratio = bbox_area / frame_area
             self.tracker.default_speed = self.update_speed_based_on_distance()
 
             if self.tracker.occupancy_ratio >= self.tracker.AUTO_STOP_OCCUPANCY_RATIO:
@@ -352,7 +339,6 @@ class TargetProcessor:
                     self.tracker.auto_stop = False
                     self.tracker.start_motor()
 
-            # 対象を矩形で囲む
             cv2.rectangle(
                 frame,
                 (selected_target.x1, selected_target.y1),
@@ -361,16 +347,25 @@ class TargetProcessor:
                 2,
             )
 
-            text_org = (selected_target.x1, selected_target.y1 - 10)
-            distance_text = f"{self.tracker.occupancy_ratio:.2%}"
+            bbox_center = (
+                (selected_target.x1 + selected_target.x2) // 2,
+                (selected_target.y1 + selected_target.y2) // 2,
+            )
+            color_distance = self.color_distance(
+                selected_target.clothing_color_rgb,
+                self.target_clothing_color or (0, 0, 0),
+            )
+            text = f"TARGET {color_distance:.2f}"
+
             cv2.putText(
                 frame,
-                f"TARGET {distance_text}",
-                text_org,
+                text,
+                bbox_center,
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (0, 255, 0),
                 1,
+                cv2.LINE_AA,
             )
 
             target_bboxes.append(
@@ -386,15 +381,7 @@ class TargetProcessor:
 
         return None
 
-    def draw_all_targets(self, detected_targets, selected_target, frame):
-        """
-        対象を全て描画します。選択された対象は緑色、それ以外は青色で囲み、'PERSON'と表示します。
-
-        Args:
-            detected_targets (List[Target]): 検出された対象のリスト
-            selected_target (Target): 選択された対象
-            frame: MatLike
-        """
+    def draw_all_targets(self, detected_targets: List[Target], selected_target, frame):
         detected_targets = [
             target for target in detected_targets if target != selected_target
         ]
@@ -404,21 +391,28 @@ class TargetProcessor:
             else:
                 color = (255, 0, 0)  # 青色 (BGR形式)
 
-            # 対象を矩形で囲む
             cv2.rectangle(
                 frame, (target.x1, target.y1), (target.x2, target.y2), color, 2
             )
 
-            # テキストを描画
-            text_org = (target.x1, target.y1 - 10)
+            bbox_center = (
+                (target.x1 + target.x2) // 2,
+                (target.y1 + target.y2) // 2,
+            )
+            color_distance = self.color_distance(
+                target.clothing_color_rgb, self.target_clothing_color or (0, 0, 0)
+            )
+            text = f"PERSON {color_distance:.2f}"
+
             cv2.putText(
                 frame,
-                "PERSON",
-                text_org,
+                text,
+                bbox_center,
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 color,
                 1,
+                cv2.LINE_AA,
             )
 
     def detect_targets(
@@ -439,7 +433,7 @@ class TargetProcessor:
 
         detected_targets = []
         results = self.model.predict(
-            source=frame, conf=0.5, verbose=False, device="cuda"
+            source=frame, conf=0.8, verbose=False, device="cuda"
         )
         for result in results:
             for box in result.boxes:

@@ -15,6 +15,10 @@ class Position:
             return cls.RIGHT
         if pos == cls.RIGHT:
             return cls.LEFT
+        if pos == Commands.ROTATE_RIGHT:
+            return Commands.ROTATE_LEFT
+        if pos == Commands.ROTATE_LEFT:
+            return Commands.ROTATE_RIGHT
         return pos
 
     @classmethod
@@ -23,6 +27,24 @@ class Position:
             return Commands.ROTATE_LEFT
         if pos == cls.RIGHT or pos == Commands.GO_RIGHT:
             return Commands.ROTATE_RIGHT
+        if pos == cls.CENTER:
+            return Commands.STOP_TEMP
+        return pos
+
+    @classmethod
+    def convert_to_pos(cls, pos):
+        if pos == Commands.ROTATE_LEFT or pos == Commands.GO_LEFT:
+            return cls.LEFT
+        if pos == Commands.ROTATE_RIGHT or pos == Commands.GO_RIGHT:
+            return cls.RIGHT
+        return pos
+
+    @classmethod
+    def convert_to_turn(cls, pos):
+        if pos == cls.LEFT or pos == Commands.ROTATE_LEFT:
+            return Commands.TURN_LEFT
+        if pos == cls.RIGHT or pos == Commands.ROTATE_RIGHT:
+            return Commands.TURN_RIGHT
         if pos == cls.CENTER:
             return Commands.STOP_TEMP
         return pos
@@ -49,6 +71,8 @@ class Commands:
     RESET_ROBOT: ClassVar[str] = "RESET"
     GET_DISTANCE: ClassVar[str] = "D"
     RESET_DISTANCE: ClassVar[str] = "RD"
+    TURN_LEFT: ClassVar[str] = "TL"
+    TURN_RIGHT: ClassVar[str] = "TR"
 
     DISCONNECT: ClassVar[str] = "DC"
     DEBUG_PID_INIT: ClassVar[str] = "PID"

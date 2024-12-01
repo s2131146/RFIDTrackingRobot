@@ -6,9 +6,11 @@ from typing import List, Tuple
 class timer:
     _start_time_list: List[Tuple[str, float, bool]] = []
 
-    def register(self, name: str, show: bool = True):
+    def register(self, name: str, show: bool = True, update: bool = False):
         if not self.has(name):
             self._start_time_list.append((name, time.time(), show))
+        elif update:
+            self.update(name)
 
     def update(self, name: str):
         if self.has(name):
@@ -38,18 +40,26 @@ class timer:
         if self.has(name):
             self._start_time_list.remove(self.get(name))
 
-    def yet(self, name: str, until: float) -> bool:
+    def yet(self, name: str, until: float, remove: bool = False) -> bool:
         if self.has(name):
-            return time.time() - self.get_start_time(name) < until
+            ret = time.time() - self.get_start_time(name) < until
+            if remove and not ret:
+                self.remove(name)
+            return ret
         else:
-            self.register(name)
             return False
 
-    def passed(self, name: str, sec: float) -> bool:
+    def passed(
+        self, name: str, sec: float, update: bool = False, remove: bool = False
+    ) -> bool:
         if self.has(name):
-            return time.time() - self.get_start_time(name) >= sec
+            ret = time.time() - self.get_start_time(name) >= sec
+            if update and ret:
+                self.update(name)
+            if remove and ret:
+                self.remove(name)
+            return ret
         else:
-            self.register(name)
             return False
 
     def get_elapsed(self, name: str) -> float:

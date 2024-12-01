@@ -222,7 +222,7 @@ class RFIDReader:
         if max_count > 0:
             antenna = antennas_with_max[0]
             direction = ANTENNA_MAPS[antenna]
-            return Position.convert_to_rotate(self.direction_to_command(direction))
+            return self.direction_to_command(direction)
 
         return Commands.STOP_TEMP
 
