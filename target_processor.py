@@ -97,6 +97,8 @@ class TargetProcessor:
             self.current_target = None
             self.target_clothing_color = None
 
+        self.tracker.gui.update_status("Reset Target.")
+
     def update_speed_based_on_distance(self):
         """対象の占有率に基づいてself.default_speedを滑らかに更新"""
         ratios = [
@@ -184,7 +186,7 @@ class TargetProcessor:
             selected_target = self.select_target_by_color(
                 detected_targets,
                 self.target_clothing_color,
-                80 if no_target else self.color_tolerance,
+                120 if no_target else self.color_tolerance,
             )
 
         # 光や映っている範囲で色が変わるため、逐一更新
@@ -433,7 +435,7 @@ class TargetProcessor:
 
         detected_targets = []
         results = self.model.predict(
-            source=frame, conf=0.8, verbose=False, device="cuda"
+            source=frame, conf=0.6, verbose=False, device="cuda"
         )
         for result in results:
             for box in result.boxes:

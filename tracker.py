@@ -198,7 +198,7 @@ class Tracker:
         self.timer.register("serial_send_motor", show=False)
         self.timer.register("send_check", show=False)
         self.timer.register("l_obstacle")
-        self.timer.register("target_l_seen")
+        self.timer.register("t_l_seen")
         self.timer.register("l_w_avoid")
         self.timer.register("l_w_detect")
         self.timer.register("for_avoid_w")
@@ -569,11 +569,13 @@ class Tracker:
             and self.gui.var_enable_beep.get()
             and not self.first_find
         ):
+            logger.info("Playing BEEP")
             self.playing_beep = True
             pygame.mixer.music.play(loops=-1)
 
     def stop_beep(self):
         if self.playing_beep:
+            logger.info("Stop BEEP")
             pygame.mixer.music.stop()
             self.playing_beep = False
 
@@ -633,7 +635,7 @@ class Tracker:
     def update_rfid_power(self):
         if self.RFID_ENABLED:
             detection_counts = self.rfid_reader.get_detection_counts()
-            self.gui.update_rfid_values(detection_counts)
+            self.gui.update_rfid_values(detection_counts, self.rfid_reader.no_reader)
         else:
             self.gui.update_rfid_values({1: 0, 2: 0, 3: 0, 4: 0})
 
@@ -654,35 +656,26 @@ class Tracker:
             logger.warning("Failed to read frame from webcam.")
             self.frame = np.ones((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8) * 255
 
-    def apply_rfid_direction(self, multi_targets=False):
+    def apply_rfid_direction(self):
         """RFIDの方向情報を適用（デュアルモード）"""
         if not self.gui.var_enable_tracking.get():
             return
         self.rfid_accessing = True
         if not self.stop or (self.auto_stop and self.mode == Tracker.Mode.DUAL):
-            if multi_targets:
-                detected_count = self.rfid_reader.get_detection_counts()
-                side = max(
-                    detected_count[RFIDAntenna.RIGHT.value],
-                    detected_count[RFIDAntenna.LEFT.value],
-                )
-
-                if detected_count[RFIDAntenna.CENTER.value] < side:
-                    direction = self.rfid_reader.get_rotate_direction()
-            else:
-                direction = self.rfid_reader.get_direction()
+            direction = self.rfid_reader.get_direction()
             if direction != Commands.STOP_TEMP and self.auto_stop:
                 self.start_motor()
 
-            self.lost_target_command = Position.convert_to_rotate(direction)
-            logger.info(
-                f"RFID Direction applied to lost command: {self.lost_target_command}"
-            )
+            if direction != Commands.GO_CENTER and direction != Commands.STOP_TEMP:
+                self.lost_target_command = Position.convert_to_rotate(direction)
+                logger.info(
+                    f"RFID Direction applied to lost command: {self.lost_target_command}"
+                )
 
     def process_targets(self):
         """対象の検出と追跡を処理"""
         detected_targets = self._detect_and_select_targets()
-        key = "target_detection"
+        key = "t_detection"
         if len(detected_targets) > 0:
             self.stop_beep()
             self.timer.remove("find_target")
@@ -716,6 +709,7 @@ class Tracker:
         self.rfid_accessing = False
 
         selected_target = None
+        rf_dir = self.rfid_reader.get_direction()
 
         if not self.RFID_ONLY_MODE:
             if len(detected_targets) > 0:
@@ -723,18 +717,32 @@ class Tracker:
                     detected_targets
                 )
                 if selected_target is None:
+                    if rf_dir == Commands.GO_CENTER:
+                        self.target_processor.reset_target()
                     if (
-                        (
-                            self.RFID_ENABLED
-                            and self.lost_target_command == Commands.STOP_TEMP
+                        not self.stop_exec_cmd
+                        and (
+                            (self.RFID_ENABLED and rf_dir == Commands.STOP_TEMP)
+                            or not self.RFID_ENABLED
                         )
-                        or not self.RFID_ENABLED
-                        and self.timer.passed("target_l_seen", 1)
+                        and self.timer.passed("t_l_seen", 1)
                     ) and not self.missed_target:
+                        logger.info("Person detected but Target not detected.")
                         self.missed_target = True
                         self.missed_target_count += 1
                     self._handle_no_targets()
                 else:
+                    if (
+                        self.RFID_ENABLED
+                        and Position.convert_to_rotate(rf_dir)
+                        != self.lost_target_command
+                        and rf_dir != Commands.STOP_TEMP
+                        and rf_dir != Commands.GO_CENTER
+                    ):
+                        logger.info(f"Detected rfid from diff dir: {dir}")
+                        self.apply_rfid_direction()
+                        self.target_processor.reset_target()
+
                     self.first_find = False
                     self.tracking_target_invisible = False
                     self.missed_target = False
@@ -758,9 +766,10 @@ class Tracker:
             if result is not None:
                 target_center_x, self.target_x, _ = result
                 self.target_position = self.get_target_pos_str(target_center_x)
+
                 if self.time_detected >= 0.3:
-                    self.timer.register("target_l_seen")
-                    self.timer.update("target_l_seen")
+                    self.timer.register("t_l_seen")
+                    self.timer.update("t_l_seen")
                     self.stop_temp = False
 
         if self.RFID_ENABLED:
@@ -801,6 +810,13 @@ class Tracker:
 
     def _handle_no_targets(self):
         """対象が検出されなかった場合の処理を行う"""
+        if self.first_find:
+            return
+
+        if self.RFID_ENABLED:
+            logger.info("Handle missing targets. Appling RFID.")
+            self.apply_rfid_direction()
+
         if (
             self.lost_target_avoid_wall != Position.NONE
             and Position.convert_to_rotate(self.lost_target_avoid_wall)
@@ -816,23 +832,23 @@ class Tracker:
                 "for_avoid_w", 1.5
             ):
                 self.timer.update("l_w_avoid")
-            self.timer.update("target_l_seen")
+            self.timer.update("t_l_seen")
 
             self.tracking_target_invisible = True
             return
 
         self.last_wall_avoid = Position.NONE
-        self.timer.remove("target_detection")
+        self.timer.remove("t_detection")
 
-        if self.timer.passed("target_l_seen", 0.5) and not self.stop_temp:
-            if not self.find_target_rotate:
-                self.timer.remove("target_l_seen")
+        if self.timer.passed("t_l_seen", 0.5, remove=True) and not self.stop_temp:
+            logger.info("Executing lost command")
             self.lost_target_avoid_wall = Position.NONE
             self.find_target_rotate = False
-            if self.RFID_ENABLED:
-                self.apply_rfid_direction()
-            elif not self.stop and not self.stop_exec_cmd_gui:
+            if not self.stop and not self.stop_exec_cmd_gui:
                 self.exec_lost_target_command()
+        elif self.RFID_ENABLED and self.lost_target_command == Commands.STOP_TEMP:
+            logger.info("Executing RFID direction in lost mode.")
+            self._send_target_position_if_rfid_mode(force=True)
 
     def _process_obstacles(self, detected_targets):
         """障害物の処理を行う内部関数"""
@@ -917,17 +933,17 @@ class Tracker:
 
     def _control_motor_for_target(self):
         """対象の位置に基づいてモーターを制御"""
-        base_speed = self._calculate_base_speed()
-        self.motor_power_l = base_speed
-        self.motor_power_r = base_speed
-
         if self.target_x != -1:
             self.calculate_motor_power(self.target_x)
 
         no_target = (
             self.target_position == Position.NONE and not self.tracking_target_invisible
-        )
-        skip_parallel = no_target or (
+        ) or (self.motor_power_l != 0 or self.motor_power_r != 0)
+
+        if no_target:
+            return True
+
+        skip_parallel = (
             Position.convert_to_rotate(self.wall) != self.lost_target_command
             and self.lost_target_command != Commands.STOP_TEMP
             or (
@@ -936,14 +952,14 @@ class Tracker:
             )
         )
 
+        base_speed = self._calculate_base_speed()
+        self.motor_power_l = base_speed
+        self.motor_power_r = base_speed
+
         if self.wall_parallel == Obstacles.OBS_PARALLEL_FULL and not skip_parallel:
             base_speed = self._calculate_base_speed()
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
-
-        if no_target:
-            self.motor_power_l = 0
-            self.motor_power_r = 0
 
         return skip_parallel
 
@@ -951,9 +967,8 @@ class Tracker:
 
     def _send_target_position_if_rfid_mode(self, force=False):
         """RFIDモードの場合、対象の方向を送信"""
-        if force or (
-            self.RFID_ONLY_MODE
-            and self.RFID_ENABLED
+        if (
+            (force or (self.RFID_ONLY_MODE and self.RFID_ENABLED))
             and not self.stop
             and self.gui.var_enable_tracking.get()
             and not self.stop_exec_cmd
@@ -1121,11 +1136,11 @@ class Tracker:
         debug_text = (
             f"{self.seg} {math.floor(self.frame_width)} x {math.floor(self.frame_height)} "
             f"avr_fps: {math.floor(self.avr_fps)} fps: {math.floor(self.fps)} "
-            f"target_position: {self.target_position}\n"
-            f"target_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr} in_center: {center}\n"
+            f"t_position: {self.target_position}\n"
+            f"t_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr} in_center: {center}\n"
             f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
             f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
-            f"avoid: {self.avoid_wall} track_out: {self.tracking_target_invisible} lost_wall: {self.lost_target_avoid_wall} beep: {self.playing_beep}\n"
+            f"avoid: {self.avoid_wall} track_out: {self.tracking_target_invisible} lost_wall: {self.lost_target_avoid_wall} beep: {self.playing_beep} RF_dir: {self.rfid_reader.get_direction()}\n"
             f"RFID: {self.RFID_ENABLED} RFID_only: {self.RFID_ONLY_MODE} RFID_Power: {rfid_power} def_spd: {self.default_speed} parallel: {self.wall_parallel}\n"
             f"auto_stop: {self.auto_stop} close: {self.is_close_obs} occupancy: {self.occupancy_ratio:.2%} exec_stop: {self.stop_exec_cmd}\n"
             f"last_wall_detect: {self.last_wall_detect} close_wall: {self.too_close_wall} closest: {self.closest_wall_depth} farthest: {self.farthest_wall_depth} lost: {self.lost_target_command}\n"

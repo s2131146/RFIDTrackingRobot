@@ -44,6 +44,7 @@ class RFIDReader:
 
         self.signal_strength = 40  # 初期値を40に設定
         self.rear_detection_streak = 0
+        self.no_reader = False
 
         try:
             self.ser = serial.Serial(

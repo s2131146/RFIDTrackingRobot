@@ -15,6 +15,7 @@ from tkinter import scrolledtext as st, ttk, font
 from PIL import Image, ImageTk, ImageDraw
 from constants import Commands, Position
 
+from logger import logger as l
 from timer import timer
 import tracker
 import tqueue
@@ -39,6 +40,7 @@ FFMPEG_PATH = "ffmpeg/ffmpeg.exe"
 TIMER_ACTIVE = 0
 TIMER_START = 1
 TIMER_TRACKING = 2
+TIMER_DATETIME = 3
 
 JOYSTICK = True
 
@@ -62,7 +64,7 @@ class GUI:
 
         self.motor_left_var = tk.StringVar(value="0%")
         self.motor_right_var = tk.StringVar(value="0%")
-        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.CAM_ONLY.name)
+        self.mode_var = tk.StringVar(value=tracker.Tracker.Mode.DUAL.name)
         self.var_auto_scroll_received = tk.IntVar(value=1)
         self.var_auto_scroll_sent = tk.IntVar(value=1)
 
@@ -508,12 +510,20 @@ class GUI:
     def create_status_label(self):
         timer_font = font.Font(family="Consolas", size=16)
 
+        self.label_timer_date = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_timer_date.grid(
+            row=0, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
         self.label_timer_active = tk.Label(
             self.button_panel_frame,
             font=timer_font,
         )
         self.label_timer_active.grid(
-            row=0, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=1, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
         self.label_timer_start = tk.Label(
@@ -521,7 +531,7 @@ class GUI:
             font=timer_font,
         )
         self.label_timer_start.grid(
-            row=1, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=2, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
         self.label_timer_tracking = tk.Label(
@@ -529,15 +539,7 @@ class GUI:
             font=timer_font,
         )
         self.label_timer_tracking.grid(
-            row=2, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
-        )
-
-        self.label_tracking_rate = tk.Label(
-            self.button_panel_frame,
-            font=timer_font,
-        )
-        self.label_tracking_rate.grid(
-            row=4, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=3, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
         self.label_miss_count = tk.Label(
@@ -545,7 +547,15 @@ class GUI:
             font=timer_font,
         )
         self.label_miss_count.grid(
-            row=3, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=4, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
+        self.label_tracking_rate = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_tracking_rate.grid(
+            row=5, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
         self.label_move_distance = tk.Label(
@@ -553,7 +563,7 @@ class GUI:
             font=timer_font,
         )
         self.label_move_distance.grid(
-            row=5, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=6, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
     def init_timer(self):
@@ -571,6 +581,9 @@ class GUI:
         if id == TIMER_TRACKING:
             label = "TRACKING"
             elapsed_time = self.elapsed_tracking
+        if id == TIMER_DATETIME:
+            now = datetime.now()
+            return f"{now.strftime('%H:%M:%S')}.{now.microsecond // 10000:02d}"
         minutes = int(elapsed_time // 60)
         seconds = int(elapsed_time % 60)
         milliseconds = int((elapsed_time * 100) % 100)
@@ -605,6 +618,7 @@ class GUI:
 
             self.timer.update("tracking")
 
+            self.label_timer_date.config(text=self.formatted_time(TIMER_DATETIME))
             self.label_timer_active.config(text=self.formatted_time(TIMER_ACTIVE))
             self.label_timer_start.config(text=self.formatted_time(TIMER_START))
             self.label_timer_tracking.config(text=self.formatted_time(TIMER_TRACKING))
@@ -1255,6 +1269,7 @@ class GUI:
     def update_status(self, status):
         if not self.destroy:
             self.label_status.config(text=status)
+            logger.logger.info(f"STATUS: {status}")
 
     def update_wheel(self):
         if self.queue.has("g") and not self.destroy:
@@ -1342,13 +1357,13 @@ class GUI:
     def reset_button_clicked(self):
         """RESETボタンがクリックされたときの処理"""
         self.tracker.target_processor.reset_target()
-        self.update_status("Target Data reset.")
 
-    def update_rfid_values(self, counts):
+    def update_rfid_values(self, counts, no_reader: bool = False):
         """各アンテナの検出回数を更新します。
 
         Args:
             counts (dict): 各アンテナの検出回数
+            no_reader (bool): リーダー未接続
         """
         if self.destroy:
             return
@@ -1367,6 +1382,9 @@ class GUI:
                 max_count = 12
                 green_intensity = min(255, int((count / max_count) * 255))
                 color = f"#{255-green_intensity:02x}{255:02x}{255-green_intensity:02x}"
+
+            if no_reader:
+                color = "red"
 
             canvas.itemconfig(rect_id, fill=color)
 

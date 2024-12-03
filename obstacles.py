@@ -68,6 +68,9 @@ class Obstacles:
         self.frame_width = frame_width - 25
         self.frame_height = frame_height
 
+        self.frame_width_original = frame_width
+        self.frame_height_original = frame_height
+
         self.timer = timer()
 
         # ロガーを設定
@@ -252,6 +255,7 @@ class Obstacles:
             and Position.convert_to_rotate(most_common_wall_position)
             != target_lost_command
             and not most_common_avoid_wall
+            and most_common_wall_position != self.OBS_NONE
         ):
             most_common_wall_parallel = False
             most_common_wall_position = Position.convert_to_pos(target_lost_command)
@@ -382,13 +386,15 @@ class Obstacles:
         if target_bbox is None or len(target_bbox) == 0:
             return False
 
-        x1, _, x2, _ = target_bbox
+        x1, y1, x2, y2 = target_bbox
 
         in_center_area = not (
             x2 // 2 < self.central_start or x1 // 2 > self.central_end
         )
 
-        return in_center_area
+        height = y2 - y1
+
+        return (height / self.frame_height_original) > 0.7 and in_center_area
 
     def determine_wall_position(
         self,
