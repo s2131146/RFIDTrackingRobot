@@ -189,29 +189,37 @@ unsigned int Motor::PIDGetSpeedRPMDesired() const {
 }
 
 bool Motor::PIDRegulate(bool doRegulate) {
-	debug();
-	if(PIDGetStatus()==false) return false;
-	if(getPinIRQB()!=PIN_UNDEFINED && getDesiredDir()!=getCurrDir()) {
-		speedRPMInput=-SPEEDPPS2SPEEDRPM(isr->speedPPS);
-	} else {
-		speedRPMInput=SPEEDPPS2SPEEDRPM(isr->speedPPS);
-	}
+    debug();
+    if (PIDGetStatus() == false) return false;
 
-	PID::Compute();
-	if(doRegulate && PID::JustCalculated()) {
-		speed2DutyCycle+=speedRPMOutput;
+    // エンコーダから速度入力を取得
+    if (getPinIRQB() != PIN_UNDEFINED && getDesiredDir() != getCurrDir()) {
+        speedRPMInput = -SPEEDPPS2SPEEDRPM(isr->speedPPS);
+    } else {
+        speedRPMInput = SPEEDPPS2SPEEDRPM(isr->speedPPS);
+    }
 
-		if(speed2DutyCycle>=MAX_SPEEDRPM) speed2DutyCycle=MAX_SPEEDRPM;
-		else if(speed2DutyCycle<=-MAX_SPEEDRPM)  speed2DutyCycle=-MAX_SPEEDRPM;
-		if(speed2DutyCycle>=0) {
-			runPWM(map(speed2DutyCycle,0,MAX_SPEEDRPM,0,MAX_PWM),getDesiredDir(),false);
-		} else {
-			runPWM(map(abs(speed2DutyCycle),0,MAX_SPEEDRPM,0,MAX_PWM),!getDesiredDir(),false);
-		}
-		return true;
-	}
-	return false;
+    PID::Compute();
+
+    if (doRegulate && PID::JustCalculated()) {
+        speed2DutyCycle += speedRPMOutput;
+
+        // 出力をクリップ（上限と下限を制限）
+        if (speed2DutyCycle >= MAX_SPEEDRPM) {
+            speed2DutyCycle = MAX_SPEEDRPM;
+        } else if (speed2DutyCycle <= -MAX_SPEEDRPM) {
+            speed2DutyCycle = -MAX_SPEEDRPM;
+        }
+
+        if (speed2DutyCycle >= 0) {
+            runPWM(map(speed2DutyCycle, 0, MAX_SPEEDRPM, 0, MAX_PWM), getDesiredDir(), false);
+        } else {
+            runPWM(map(abs(speed2DutyCycle), 0, MAX_SPEEDRPM, 0, MAX_PWM), !getDesiredDir(), false);
+        }
+    }
+    return true;
 }
+
 /*
 bool Motor::PIDRegulate(bool doRegulate) {
 	debug();

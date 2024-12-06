@@ -10,15 +10,15 @@ class Position:
     NONE: ClassVar[str] = "X"
 
     @classmethod
-    def invert(cls, pos):
+    def invert(cls, pos, lr=False):
         if pos == cls.LEFT:
             return cls.RIGHT
         if pos == cls.RIGHT:
             return cls.LEFT
         if pos == Commands.ROTATE_RIGHT:
-            return Commands.ROTATE_LEFT
+            return cls.LEFT if lr else Commands.ROTATE_LEFT
         if pos == Commands.ROTATE_LEFT:
-            return Commands.ROTATE_RIGHT
+            return cls.RIGHT if lr else Commands.ROTATE_RIGHT
         return pos
 
     @classmethod

@@ -142,10 +142,10 @@ class Obstacles:
         self.left_center_end = self.central_start * 6 // 10
         self.right_center_start = (
             self.central_end + (self.frame_width - self.central_end) * 4 // 10
-        ) + 15
+        )
         self.right_center_end = (
             self.central_end + (self.frame_width - self.central_end) * 6 // 10
-        )
+        ) + 15
 
     def process_obstacles(
         self,

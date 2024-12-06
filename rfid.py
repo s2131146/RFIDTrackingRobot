@@ -5,6 +5,7 @@ import time
 import re
 import logger
 from constants import Commands, Position
+from timer import timer
 
 
 class RFIDAntenna(Enum):
@@ -33,6 +34,8 @@ class RFIDReader:
         self.ser = None
         self.running = False
         self.thread = None
+        self.timer = timer()
+        self.timer.register("rfid")
         self.lock = threading.Lock()
 
         self.detection_counts = {1: 0, 2: 0, 3: 0, 4: 0}  # REAR, LEFT, RIGHT, CENTER
@@ -140,6 +143,9 @@ class RFIDReader:
                         f"Send: {repr(full_command)}, Response: {repr(response)}"
                     )
                 response = re.sub(r"[\n\t\r]", "", response)
+
+                if response == "":
+                    return self.send_command(command, skip_tag)
                 return response
             except serial.SerialException as e:
                 logger.logger.error(f"Serial exception: {e}")
@@ -167,6 +173,8 @@ class RFIDReader:
         with self.lock:
             self.current_antenna = antenna_id
 
+    prev_lr = Commands.GO_LEFT
+
     def antenna_to_direction(self, counts):
         """アンテナ検出回数に基づいて移動方向を決定します。"""
         rear = counts.get(RFIDAntenna.REAR.value, 0)
@@ -181,6 +189,13 @@ class RFIDReader:
         antennas_with_ge1 = [ant for ant, cnt in counts.items() if cnt >= 2]
         total_ge1 = len(antennas_with_ge1)
 
+        antennas_with_ge3 = [ant for ant, cnt in counts.items() if cnt >= 3]
+        total_ge3 = len(antennas_with_ge3)
+
+        # 3回以上のアンテナが3つ以上で停止
+        if total_ge3 >= 3:
+            return Commands.STOP_TEMP
+
         # 各アンテナの最大検出回数とそれを持つアンテナ
         max_count = max(counts.values(), default=0)
         antennas_with_max = [ant for ant, cnt in counts.items() if cnt == max_count]
@@ -191,7 +206,7 @@ class RFIDReader:
             self.rear_detection_streak = 0
 
         if self.rear_detection_streak >= 2:
-            return Commands.ROTATE_LEFT
+            return Position.convert_to_rotate(self.prev_lr)
 
         # 5. 3つ以上のアンテナで検出された場合
         if total_ge1 >= 3:
@@ -223,7 +238,10 @@ class RFIDReader:
         if max_count > 0:
             antenna = antennas_with_max[0]
             direction = ANTENNA_MAPS[antenna]
-            return self.direction_to_command(direction)
+            dir = self.direction_to_command(direction)
+            if max_count >= 4:
+                dir = Position.convert_to_rotate(dir)
+            return dir
 
         return Commands.STOP_TEMP
 
@@ -242,14 +260,13 @@ class RFIDReader:
         epc_command = "Q"  # EPC読み取りコマンド
         response = self.send_command(epc_command)
 
-        if RFID_CARD in response:
+        if RFID_ACTIVE in response:
             with self.lock:
                 self.detection_counts[self.current_antenna] += 1
 
     def monitor_rfid(self):
         """RFIDタグを監視し、検出回数に基づいて方向を予測します。"""
         try:
-            start_time = time.time()
             while self.running:
                 # 1. CENTER、LEFT、RIGHTアンテナでEPC読み取り
                 for antenna_id in [1, 2, 3, 4]:
@@ -272,7 +289,7 @@ class RFIDReader:
                         )
                         or (
                             new_direction == Commands.GO_CENTER
-                            and self.predict_direction == Commands.ROTATE_LEFT
+                            and Commands.is_rotate(self.predict_direction)
                         )
                         or new_direction == Commands.STOP_TEMP
                     ):
@@ -291,24 +308,26 @@ class RFIDReader:
                     ):
                         self.last_move_direction = self.predict_direction
                     self.last_direction = new_direction
+                    if (
+                        new_direction == Commands.GO_LEFT
+                        or new_direction == Commands.GO_RIGHT
+                    ):
+                        self.prev_lr = new_direction
                     for key in self.detection_counts:
                         self.detection_counts[key] = 0
 
                 # 電波の強さを調整
-                if time.time() - start_time >= 1.0:  # 1秒経過後に調整
-                    start_time = time.time()
+                if self.timer.passed("rfid", 1, update=True):
                     self.adjust_signal_strength()
 
-                # 方向を直接設定
                 with self.lock:
-                    # アンテナ名と検出回数を文字列に変換
                     counts_str = ", ".join(
                         [
                             f"{ANTENNA_MAPS[ant]}={cnt}"
                             for ant, cnt in counts_copy.items()
                         ]
                     )
-                    # 方向と検出回数をログに記録
+
                     logger.logger.debug(
                         f"Direction: {self.predict_direction}, Counts: {counts_str}"
                     )
@@ -356,7 +375,7 @@ class RFIDReader:
 
 
 def main():
-    reader = RFIDReader(port="COM8", baudrate=38400)
+    reader = RFIDReader(port="COM8")
     reader.start_reading()
     try:
         while True:
