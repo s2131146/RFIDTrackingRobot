@@ -5,12 +5,17 @@
 PIDDualMotorControl::PIDDualMotorControl(PIDMotorControl* leftMotor, PIDMotorControl* rightMotor, float wheelBaseMM)
     : leftMotor(leftMotor), rightMotor(rightMotor), wheelBaseMM(wheelBaseMM) {}
 
-void PIDDualMotorControl::wait(float durationMS) {
+void PIDDualMotorControl::wait(float durationMS, bool defaultRun) {
     if (durationMS != -1) {
         unsigned long startTime = millis();
 
         while (millis() - startTime < durationMS) {
-            run();
+            if (defaultRun) {
+                run();
+            } else {
+                leftMotor->run();
+                rightMotor->run();
+            }
         }
     }
 }
@@ -64,38 +69,36 @@ void PIDDualMotorControl::stop() {
 }
 
 void PIDDualMotorControl::run() {
-    float currentTime = millis();
-    float currentLeftSpeed = leftMotor->getCurrentSpeed();
-    float currentRightSpeed = rightMotor->getCurrentSpeed();
-
-    if (currentTargetLeftSpeed != targetLeftSpeed || targetLeftSpeed >= 0 != (leftMotor->getCurrentDirection() == FORWARD)) {
-        leftSpeedChangeStartTime = currentTime;
-        currentTargetLeftSpeed = targetLeftSpeed;
-        if (currentLeftSpeed == 0) {
-            leftMotor->set(350, (targetLeftSpeed >= 0 ? FORWARD : REVERSE));
-            wait(500);
-        }
+    bool leftDirChange = targetLeftSpeed >= 0 != (leftMotor->getCurrentDirection() == FORWARD);
+    bool rightDirChange = targetRightSpeed >= 0 != (rightMotor->getCurrentDirection() == FORWARD);
+    if ((leftMotor->getCurrentSpeed() == 0 && targetLeftSpeed != 0) || leftDirChange) {
+        leftMotor->set(350, (targetLeftSpeed >= 0 ? FORWARD : REVERSE));
+        boostStartTimeLeft = millis();
     }
-    if (currentTargetRightSpeed != targetRightSpeed || targetRightSpeed >= 0 != (leftMotor->getCurrentDirection() == FORWARD)) {
-        rightSpeedChangeStartTime = currentTime;
-        currentTargetRightSpeed = targetRightSpeed;
-        if (currentRightSpeed == 0) {
-            rightMotor->set(350, (targetRightSpeed >= 0 ? FORWARD : REVERSE));
-            wait(500);
-        }
+    if ((rightMotor->getCurrentSpeed() == 0 && targetRightSpeed != 0) || rightDirChange) {
+        rightMotor->set(350, (targetRightSpeed >= 0 ? FORWARD : REVERSE));
+        boostStartTimeRight = millis();
     }
 
-    unsigned long timeElapsedL = currentTime - leftSpeedChangeStartTime;
-    if (timeElapsedL > SPEED_CHANGE_DURATION) timeElapsedL = SPEED_CHANGE_DURATION;
-    float progress = (float)timeElapsedL / SPEED_CHANGE_DURATION;
-    currentLeftSpeed = (1.0 - progress) * currentLeftSpeed + progress * targetLeftSpeed;
-    leftMotor->set(abs(currentLeftSpeed), leftMotor->getCurrentDirection());
-
-    unsigned long timeElapsedR = currentTime - rightSpeedChangeStartTime;
-    if (timeElapsedR > SPEED_CHANGE_DURATION) timeElapsedR = SPEED_CHANGE_DURATION;
-    progress = (float)timeElapsedR / SPEED_CHANGE_DURATION;
-    currentRightSpeed = (1.0 - progress) * currentRightSpeed + progress * targetRightSpeed;
-    rightMotor->set(abs(currentRightSpeed), rightMotor->getCurrentDirection());
+    bool boost = false;
+    if (millis() - boostStartTimeLeft < 500) {
+        boost = true;
+        leftMotor->run();
+    }
+    if (millis() - boostStartTimeRight < 500) {
+        boost = true;
+        rightMotor->run();
+    }
+    if (boost) {
+        return;
+    }
+    
+    if (leftMotor->getCurrentSpeed() != targetLeftSpeed || leftDirChange) {
+        leftMotor->set(abs(targetLeftSpeed), targetLeftSpeed >= 0 ? FORWARD : REVERSE);
+    }
+    if (rightMotor->getCurrentSpeed() != targetRightSpeed || rightDirChange) {
+        rightMotor->set(abs(targetRightSpeed), targetRightSpeed >= 0 ? FORWARD : REVERSE);
+    }
 
     leftMotor->run();
     rightMotor->run();

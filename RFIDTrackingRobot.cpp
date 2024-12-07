@@ -85,11 +85,11 @@ void stop() {
 }
 
 void rotateRight() {
-    motor->rotateRight(300);
+    motor->rotateRight(250);
 }
 
 void rotateLeft() {
-    motor->rotateLeft(300);
+    motor->rotateLeft(250);
 }
 
 void turnRight() {
@@ -229,8 +229,8 @@ void setup() {
     TCCR1B = TCCR1B & 0xf8 | 0x01;  // Pin9, Pin10 PWM 31250Hz
     TCCR2B = TCCR2B & 0xf8 | 0x01;  // Pin3, Pin11 PWM 31250Hz
 
-    _motorRight = new PIDMotorControl(3, 2);
-    _motorLeft = new PIDMotorControl(10, 11, REVERSE);
+    _motorRight = new PIDMotorControl(10, 11, REVERSE);
+    _motorLeft = new PIDMotorControl(3, 2);
     motor = new PIDDualMotorControl(_motorLeft, _motorRight);
 
     Serial.println("Setup completed");

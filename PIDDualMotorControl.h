@@ -11,7 +11,7 @@ public:
     
     PIDDualMotorControl(PIDMotorControl* leftMotor, PIDMotorControl* rightMotor, float wheelBaseMM = 150.0);
     void waitAndStop(float durationMS);
-    void wait(float durationMS);
+    void wait(float durationMS, bool defaultRun = true);
     void set(float speedMMPS, Direction direction = FORWARD, float durationMS = -1);
     void rotateLeft(float speedMMPS, float durationMS = -1);
     void rotateRight(float speedMMPS, float durationSec = -1);
@@ -27,12 +27,8 @@ private:
     float currentTargetLeftSpeed;
     float currentTargetRightSpeed;
     float wheelBaseMM;
-
-    unsigned long leftSpeedChangeStartTime;
-    unsigned long rightSpeedChangeStartTime;
-
-    const int SPEED_CHANGE_DURATION = 1500;
-
+    float boostStartTimeLeft;
+    float boostStartTimeRight;
     void calculateAndSetMotorSpeeds(float leftSpeedMMPS, float rightSpeedMMPS);
 };
 
