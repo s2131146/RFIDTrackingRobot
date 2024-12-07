@@ -69,6 +69,13 @@ void PIDDualMotorControl::stop() {
 }
 
 void PIDDualMotorControl::run() {
+    if (targetLeftSpeed == 0) {
+        leftMotor->stop();
+    }
+    if (targetRightSpeed == 0) {
+        rightMotor->stop();
+    }
+
     bool leftDirChange = targetLeftSpeed >= 0 != (leftMotor->getCurrentDirection() == FORWARD);
     bool rightDirChange = targetRightSpeed >= 0 != (rightMotor->getCurrentDirection() == FORWARD);
     if ((leftMotor->getCurrentSpeed() == 0 && targetLeftSpeed != 0) || leftDirChange) {
@@ -93,10 +100,10 @@ void PIDDualMotorControl::run() {
         return;
     }
     
-    if (leftMotor->getCurrentSpeed() != targetLeftSpeed || leftDirChange) {
-        leftMotor->set(abs(targetLeftSpeed), targetLeftSpeed >= 0 ? FORWARD : REVERSE);
+    if (targetLeftSpeed != 0 && leftMotor->getCurrentSpeed() != targetLeftSpeed || leftDirChange) {
+        leftMotor->set(abs(targetLeftSpeed), targetLeftSpeed > 0 ? FORWARD : REVERSE);
     }
-    if (rightMotor->getCurrentSpeed() != targetRightSpeed || rightDirChange) {
+    if (targetRightSpeed != 0 && rightMotor->getCurrentSpeed() != targetRightSpeed || rightDirChange) {
         rightMotor->set(abs(targetRightSpeed), targetRightSpeed >= 0 ? FORWARD : REVERSE);
     }
 
