@@ -68,7 +68,7 @@ void PIDDualMotorControl::run() {
     float currentLeftSpeed = leftMotor->getCurrentSpeed();
     float currentRightSpeed = rightMotor->getCurrentSpeed();
 
-    if (currentTargetLeftSpeed != targetLeftSpeed || targetLeftSpeed >= 0 != leftMotor->getIsForward()) {
+    if (currentTargetLeftSpeed != targetLeftSpeed || targetLeftSpeed >= 0 != (leftMotor->getCurrentDirection() == FORWARD)) {
         leftSpeedChangeStartTime = currentTime;
         currentTargetLeftSpeed = targetLeftSpeed;
         if (currentLeftSpeed == 0) {
@@ -76,7 +76,7 @@ void PIDDualMotorControl::run() {
             wait(500);
         }
     }
-    if (currentTargetRightSpeed != targetRightSpeed || targetRightSpeed != rightMotor->getIsForward()) {
+    if (currentTargetRightSpeed != targetRightSpeed || targetRightSpeed >= 0 != (leftMotor->getCurrentDirection() == FORWARD)) {
         rightSpeedChangeStartTime = currentTime;
         currentTargetRightSpeed = targetRightSpeed;
         if (currentRightSpeed == 0) {
