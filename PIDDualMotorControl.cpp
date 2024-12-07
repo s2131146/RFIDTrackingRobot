@@ -1,3 +1,5 @@
+#include "HardwareSerial.h"
+#include "Arduino.h"
 #include "PIDDualMotorControl.h"
 
 PIDDualMotorControl::PIDDualMotorControl(PIDMotorControl* leftMotor, PIDMotorControl* rightMotor, float wheelBaseMM)
@@ -8,15 +10,16 @@ void PIDDualMotorControl::wait(float durationMS) {
         unsigned long startTime = millis();
 
         while (millis() - startTime < durationMS) {
-            leftMotor->run();
-            rightMotor->run();
+            run();
         }
     }
 }
 
 void PIDDualMotorControl::waitAndStop(float durationMS) {
-    wait(durationMS);
-    stop();
+    if (durationMS != -1) {
+        wait(durationMS);
+        stop();
+    }
 }
 
 void PIDDualMotorControl::set(float speedMMPS, Direction direction, float durationMS) {
@@ -28,50 +31,72 @@ void PIDDualMotorControl::set(float speedMMPS, Direction direction, float durati
         rightSpeed = -speedMMPS;
     }
 
-    calculateAndSetMotorSpeeds(leftSpeed, rightSpeed);
+    targetLeftSpeed = leftSpeed;
+    targetRightSpeed = rightSpeed;
     waitAndStop(durationMS);
 }
 
 void PIDDualMotorControl::rotateLeft(float speedMMPS, float durationMS) {
-    calculateAndSetMotorSpeeds(-speedMMPS, speedMMPS);
+    targetLeftSpeed = -speedMMPS;
+    targetRightSpeed = speedMMPS;
     waitAndStop(durationMS);
 }
 
 void PIDDualMotorControl::rotateRight(float speedMMPS, float durationMS) {
-    calculateAndSetMotorSpeeds(speedMMPS, -speedMMPS);
+    targetLeftSpeed = speedMMPS;
+    targetRightSpeed = -speedMMPS;
     waitAndStop(durationMS);
 }
 
 void PIDDualMotorControl::setLeft(float speedMMPS, Direction direction) {
-    leftMotor->set(speedMMPS, direction);
+    targetLeftSpeed = (direction == FORWARD) ? speedMMPS : -speedMMPS;
 }
 
 void PIDDualMotorControl::setRight(float speedMMPS, Direction direction) {
-    rightMotor->set(speedMMPS, direction);
+    targetRightSpeed = (direction == FORWARD) ? speedMMPS : -speedMMPS;
 }
 
 void PIDDualMotorControl::stop() {
+    targetLeftSpeed = 0;
+    targetRightSpeed = 0;
     leftMotor->stop();
     rightMotor->stop();
 }
 
 void PIDDualMotorControl::run() {
+    float currentTime = millis();
+    float currentLeftSpeed = leftMotor->getCurrentSpeed();
+    float currentRightSpeed = rightMotor->getCurrentSpeed();
+
+    if (currentTargetLeftSpeed != targetLeftSpeed || targetLeftSpeed >= 0 != leftMotor->getIsForward()) {
+        leftSpeedChangeStartTime = currentTime;
+        currentTargetLeftSpeed = targetLeftSpeed;
+        if (currentLeftSpeed == 0) {
+            leftMotor->set(350, (targetLeftSpeed >= 0 ? FORWARD : REVERSE));
+            wait(500);
+        }
+    }
+    if (currentTargetRightSpeed != targetRightSpeed || targetRightSpeed != rightMotor->getIsForward()) {
+        rightSpeedChangeStartTime = currentTime;
+        currentTargetRightSpeed = targetRightSpeed;
+        if (currentRightSpeed == 0) {
+            rightMotor->set(350, (targetRightSpeed >= 0 ? FORWARD : REVERSE));
+            wait(500);
+        }
+    }
+
+    unsigned long timeElapsedL = currentTime - leftSpeedChangeStartTime;
+    if (timeElapsedL > SPEED_CHANGE_DURATION) timeElapsedL = SPEED_CHANGE_DURATION;
+    float progress = (float)timeElapsedL / SPEED_CHANGE_DURATION;
+    currentLeftSpeed = (1.0 - progress) * currentLeftSpeed + progress * targetLeftSpeed;
+    leftMotor->set(abs(currentLeftSpeed), leftMotor->getCurrentDirection());
+
+    unsigned long timeElapsedR = currentTime - rightSpeedChangeStartTime;
+    if (timeElapsedR > SPEED_CHANGE_DURATION) timeElapsedR = SPEED_CHANGE_DURATION;
+    progress = (float)timeElapsedR / SPEED_CHANGE_DURATION;
+    currentRightSpeed = (1.0 - progress) * currentRightSpeed + progress * targetRightSpeed;
+    rightMotor->set(abs(currentRightSpeed), rightMotor->getCurrentDirection());
+
     leftMotor->run();
     rightMotor->run();
-}
-
-void PIDDualMotorControl::update(int leftEncoderTicks, int rightEncoderTicks, int ticksPerRevolution, unsigned long deltaTimeMS) {
-    leftMotor->updateSpeedFromEncoder(leftEncoderTicks, ticksPerRevolution, deltaTimeMS);
-    rightMotor->updateSpeedFromEncoder(rightEncoderTicks, ticksPerRevolution, deltaTimeMS);
-}
-
-void PIDDualMotorControl::calculateAndSetMotorSpeeds(float leftSpeedMMPS, float rightSpeedMMPS) {
-    if (currentLeftSpeed != leftSpeedMMPS) {
-        leftMotor->set(leftSpeedMMPS, leftSpeedMMPS > 0 ? FORWARD : REVERSE);
-        currentLeftSpeed = leftSpeedMMPS;
-    }
-    if (currentRightSpeed != rightSpeedMMPS) {
-        rightMotor->set(rightSpeedMMPS, rightSpeedMMPS > 0 ? FORWARD : REVERSE);
-        currentRightSpeed = rightSpeedMMPS;
-    }
 }

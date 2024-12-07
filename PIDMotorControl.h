@@ -15,7 +15,8 @@ public:
     void set(float speedMMPS, Direction direction = FORWARD);
     void updateSpeedFromEncoder(int encoderTicks, int ticksPerRevolution, unsigned long deltaTimeMS);
     float getCurrentSpeed();
-    float getCurrentDirection();
+    Direction getCurrentDirection();
+    bool getIsForward();
     void run();
     void stop();
     void reset();
@@ -28,8 +29,10 @@ private:
     int maxPWM;
     float targetSpeedMMPS;
     float currentSpeedMMPS;
+    float speed;
     float integral;
     float previousError;
+    bool isForward;
     Direction currentDir;
     Direction baseDir;
     int calculatePID();

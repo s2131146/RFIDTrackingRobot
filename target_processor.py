@@ -106,7 +106,7 @@ class TargetProcessor:
             self.tracker.CLOSE_OCCUPANCY_RATIO,
             self.tracker.AUTO_STOP_OCCUPANCY_RATIO,
         ]
-        speeds = [300, 250, 150]
+        speeds = [500, 300, 150]
 
         occupancy = self.tracker.occupancy_ratio
 

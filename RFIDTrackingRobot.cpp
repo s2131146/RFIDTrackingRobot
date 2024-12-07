@@ -1,40 +1,21 @@
 #include "Commands.hpp"
 #include "PIDDualMotorControl.h"
 
-PIDMotorControl _motor1(3, 2);             // Right motor
-PIDMotorControl _motor2(10, 11, REVERSE);  // Left motor
-PIDDualMotorControl motor(&_motor1, &_motor2);
+PIDMotorControl* _motorLeft = nullptr;
+PIDMotorControl* _motorRight = nullptr;
+PIDDualMotorControl* motor = nullptr;
+
+bool reconnect = false;
+
+namespace RFIDTR {
 
 int DEFAULT_SPEED = 300;
 int currentSpeed = DEFAULT_SPEED;
 const int TIME_APPLY_SPEED = 1500;
 
-bool reconnect = false;
-
-namespace RFIDTR {
 String prevCommand = Commands::STOP;
 
-int rightSpeed;
-int leftSpeed;
-int targetLeftSpeed = DEFAULT_SPEED;
-int targetRightSpeed = DEFAULT_SPEED;
-int currentLeftSpeed = 0;
-int currentRightSpeed = 0;
-
-unsigned long leftSpeedChangeStartTime = 0;
-unsigned long rightSpeedChangeStartTime = 0;
-
-bool leftSpeedChanging = false;
-bool rightSpeedChanging = false;
-
-const int SPEED_CHANGE_STEPS = 10;
-const unsigned long SPEED_CHANGE_INTERVAL =
-    TIME_APPLY_SPEED / SPEED_CHANGE_STEPS;
-
-int leftSpeedStep = 0;
-int rightSpeedStep = 0;
-
-const float WHEEL_RADIUS = 1.155;
+const float WHEEL_RADIUS = 1.055;
 const float WHEEL_BASE = 0.3;
 
 float totalDistance = 0.0;
@@ -45,8 +26,8 @@ void calculateDistance() {
     float deltaTime = (currentTime - lastUpdateTime) / 1000.0;
     lastUpdateTime = currentTime;
 
-    float leftSpeed = currentLeftSpeed * WHEEL_RADIUS / 1000.0;
-    float rightSpeed = currentRightSpeed * WHEEL_RADIUS / 1000.0;
+    float leftSpeed = _motorLeft->getCurrentSpeed() * WHEEL_RADIUS / 1000.0;
+    float rightSpeed = _motorRight->getCurrentSpeed() * WHEEL_RADIUS / 1000.0;
 
     float linearVelocity = (leftSpeed + rightSpeed) / 2.0;
     float angularVelocity = (rightSpeed - leftSpeed) / WHEEL_BASE;
@@ -56,24 +37,18 @@ void calculateDistance() {
 
 float getTotalDistanceInMeters() { return totalDistance; }
 
+float getMMPS(int percent) {
+    return ((float)(percent) / 100.0) * DEFAULT_SPEED;
+}
+
 /**
  * @brief 左モーター速度を設定
  *
  * @param percent 左モーターの速度パーセンテージ
  */
 void setLeftMotorSpeed(int percent, bool invert = false, bool fixed = false) {
-    int speed = fixed ? percent : ((float)(percent) / 100.0) * DEFAULT_SPEED;
-    targetLeftSpeed = speed;
-
-    leftSpeedChanging = false;
-    if (currentLeftSpeed == 0 || targetLeftSpeed == 0) {
-        leftSpeedChanging = true;
-        leftSpeedChangeStartTime = millis();
-        leftSpeedStep = 0;
-    } else {
-        currentLeftSpeed = speed;
-        motor.setLeft(speed, invert ? REVERSE : FORWARD);
-    }
+    int speed = fixed ? percent : getMMPS(percent);
+    motor->setLeft(speed, invert ? REVERSE : FORWARD);
 }
 
 /**
@@ -82,18 +57,8 @@ void setLeftMotorSpeed(int percent, bool invert = false, bool fixed = false) {
  * @param percent 右モーターの速度パーセンテージ
  */
 void setRightMotorSpeed(int percent, bool invert = false, bool fixed = false) {
-    int speed = fixed ? percent : ((float)(percent) / 100.0) * DEFAULT_SPEED;
-    targetRightSpeed = speed;
-
-    rightSpeedChanging = false;
-    if (currentRightSpeed == 0 || targetRightSpeed == 0) {
-        rightSpeedChanging = true;
-        rightSpeedChangeStartTime = millis();
-        rightSpeedStep = 0;
-    } else {
-        currentRightSpeed = speed;
-        motor.setRight(speed, invert ? REVERSE : FORWARD);
-    }
+    int speed = fixed ? percent : getMMPS(percent);
+    motor->setRight(speed, invert ? REVERSE : FORWARD);
 }
 
 void goLeft() {
@@ -112,42 +77,27 @@ void goFoward() {
 }
 
 void goBack() {
-    leftSpeedChanging = false;
-    rightSpeedChanging = false;
-    motor.set(180, REVERSE);
+    motor->set(300, REVERSE);
 }
 
 void stop() {
-    setLeftMotorSpeed(0);
-    setRightMotorSpeed(0);
+    motor->stop();
 }
 
 void rotateRight() {
-    leftSpeedChanging = false;
-    rightSpeedChanging = false;
-    stop();
-    setRightMotorSpeed(150, true, true);
-    setLeftMotorSpeed(150, false, true);
+    motor->rotateRight(300);
 }
 
 void rotateLeft() {
-    leftSpeedChanging = false;
-    rightSpeedChanging = false;
-    stop();
-    setRightMotorSpeed(150, false, true);
-    setLeftMotorSpeed(150, true, true);
+    motor->rotateLeft(300);
 }
 
 void turnRight() {
-    leftSpeedChanging = false;
-    rightSpeedChanging = false;
     setRightMotorSpeed(40);
     setLeftMotorSpeed(100);
 }
 
 void turnLeft() {
-    leftSpeedChanging = false;
-    rightSpeedChanging = false;
     setRightMotorSpeed(100);
     setLeftMotorSpeed(40);
 }
@@ -279,6 +229,10 @@ void setup() {
     TCCR1B = TCCR1B & 0xf8 | 0x01;  // Pin9, Pin10 PWM 31250Hz
     TCCR2B = TCCR2B & 0xf8 | 0x01;  // Pin3, Pin11 PWM 31250Hz
 
+    _motorRight = new PIDMotorControl(3, 2);
+    _motorLeft = new PIDMotorControl(10, 11, REVERSE);
+    motor = new PIDDualMotorControl(_motorLeft, _motorRight);
+
     Serial.println("Setup completed");
 }
 
@@ -301,61 +255,11 @@ void loop() {
 
     unsigned long currentTime = millis();
 
-    if (currentTime - RFIDTR::lastCheck > 1000) {
+    if (currentTime - RFIDTR::lastCheck > 500) {
         RFIDTR::stop();
-    }
-
-    if (RFIDTR::leftSpeedChanging) {
-        if (currentTime - RFIDTR::leftSpeedChangeStartTime >=
-            RFIDTR::SPEED_CHANGE_INTERVAL) {
-            RFIDTR::leftSpeedChangeStartTime = currentTime;
-            RFIDTR::leftSpeedStep++;
-
-            float stepFraction =
-                (float)RFIDTR::leftSpeedStep / RFIDTR::SPEED_CHANGE_STEPS;
-            if (stepFraction > 1.0) stepFraction = 1.0;
-
-            RFIDTR::currentLeftSpeed =
-                RFIDTR::currentLeftSpeed +
-                (RFIDTR::targetLeftSpeed - RFIDTR::currentLeftSpeed) *
-                    stepFraction;
-
-            motor.setLeft(abs(RFIDTR::currentLeftSpeed));
-
-            if (RFIDTR::leftSpeedStep >= RFIDTR::SPEED_CHANGE_STEPS) {
-                RFIDTR::leftSpeedChanging = false;
-                RFIDTR::currentLeftSpeed = RFIDTR::targetLeftSpeed;
-                motor.setLeft(abs(RFIDTR::currentLeftSpeed));
-            }
-        }
-    }
-
-    if (RFIDTR::rightSpeedChanging) {
-        if (currentTime - RFIDTR::rightSpeedChangeStartTime >=
-            RFIDTR::SPEED_CHANGE_INTERVAL) {
-            RFIDTR::rightSpeedChangeStartTime = currentTime;
-            RFIDTR::rightSpeedStep++;
-
-            float stepFraction =
-                (float)RFIDTR::rightSpeedStep / RFIDTR::SPEED_CHANGE_STEPS;
-            if (stepFraction > 1.0) stepFraction = 1.0;
-
-            RFIDTR::currentRightSpeed =
-                RFIDTR::currentRightSpeed +
-                (RFIDTR::targetRightSpeed - RFIDTR::currentRightSpeed) *
-                    stepFraction;
-
-            motor.setRight(abs(RFIDTR::currentRightSpeed));
-
-            if (RFIDTR::rightSpeedStep >= RFIDTR::SPEED_CHANGE_STEPS) {
-                RFIDTR::rightSpeedChanging = false;
-                RFIDTR::currentRightSpeed = RFIDTR::targetRightSpeed;
-                motor.setRight(abs(RFIDTR::currentRightSpeed));
-            }
-        }
     }
 
     RFIDTR::calculateDistance();
 
-    motor.run();
+    motor->run();
 }

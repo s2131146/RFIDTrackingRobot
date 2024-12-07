@@ -278,7 +278,6 @@ class GUI:
             row=1, column=0, padx=DEF_MARGIN, pady=DEF_MARGIN, sticky=STICKY_CENTER
         )
 
-        # カラムの重み付けをすべて1に設定
         self.bottom_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame.grid_columnconfigure(1, weight=1)
         self.bottom_frame.grid_columnconfigure(2, weight=1)
@@ -335,7 +334,6 @@ class GUI:
             row=0, column=1, columnspan=10, padx=0, pady=0, sticky=STICKY_CENTER
         )
 
-        # RFIDアンテナのアイコンを「Enable tracking」の右側に固定
         self.rfid_frame = tk.Frame(self.bottom_frame)
         self.rfid_frame.grid(
             row=0, column=0, columnspan=1, padx=(0, 0), pady=0, sticky=STICKY_CENTER
@@ -344,7 +342,7 @@ class GUI:
         self.rfid_values = [tk.StringVar(value="0") for _ in range(4)]
         self.rfid_canvases = []
         self.rfid_text_ids = []
-        self.rfid_rect_ids = []  # 四角形のIDを保存するリスト
+        self.rfid_rect_ids = []
 
         rfid_labels = rfid.ANTENNA_NAMES
 
@@ -375,7 +373,6 @@ class GUI:
             )
             label.grid(row=1, column=i, padx=0, pady=(0, 0), sticky=STICKY_CENTER)
 
-        # モーター表示用のフレームを追加
         self.motor_frame = tk.Frame(self.rfid_frame)
         self.motor_frame.grid(
             row=2,
@@ -386,7 +383,6 @@ class GUI:
             sticky=STICKY_CENTER,
         )
 
-        # motor_frame 内のカラムを設定
         self.motor_frame.grid_columnconfigure(0, weight=1)
         self.motor_frame.grid_columnconfigure(1, weight=1)
         self.motor_frame.grid_columnconfigure(2, weight=1)
@@ -399,13 +395,10 @@ class GUI:
         motor_labels = ["L Motor", "R Motor"]
 
         for i in range(2):
-            # motor_frame 内での位置を調整
             canvas = tk.Canvas(
                 self.motor_frame, width=50, height=50, highlightthickness=0
             )
-            canvas.grid(
-                row=0, column=i, padx=20, pady=0  # 中央に配置するための padx を増やす
-            )
+            canvas.grid(row=0, column=i, padx=20, pady=0)
 
             rect_id = self.draw_rounded_rectangle(
                 canvas, 5, 5, 45, 45, radius=10, fill="white", outline="black"
@@ -627,15 +620,14 @@ class GUI:
             )
 
     def create_joystick(self):
-        joystick_size = 167  # 全体サイズ
-        knob_radius = 20  # ノブの半径
-        bg_radius = joystick_size // 2 - 10  # 背景円の半径
+        joystick_size = 167
+        knob_radius = 20
+        bg_radius = joystick_size // 2 - 10
         center = joystick_size // 2
 
         self.joystick_frame = tk.Frame(self.controller_frame)
         self.joystick_frame.grid(row=2, column=1)
 
-        # Pillowを使用してアンチエイリアス円を作成
         bg_image = Image.new("RGBA", (joystick_size, joystick_size), (255, 255, 255, 0))
         draw = ImageDraw.Draw(bg_image)
         draw.ellipse(
@@ -648,10 +640,8 @@ class GUI:
             fill="#d3d3d3",
         )
 
-        # Tkinter用に変換
         self.bg_image_tk = ImageTk.PhotoImage(bg_image)
 
-        # キャンバスを作成
         self.joystick_canvas = tk.Canvas(
             self.joystick_frame,
             width=joystick_size,
@@ -661,10 +651,8 @@ class GUI:
         )
         self.joystick_canvas.grid(row=0, column=0, padx=0, pady=0)
 
-        # 背景円を描画
         self.joystick_canvas.create_image(0, 0, anchor=tk.NW, image=self.bg_image_tk)
 
-        # ノブ（中央の円）を描画
         self.knob = self.joystick_canvas.create_oval(
             center - knob_radius,
             center - knob_radius,
@@ -678,7 +666,6 @@ class GUI:
         self.bg_radius = bg_radius
         self.joystick_radius = joystick_size // 2 - 10
 
-        # マウスイベントをバインド
         self.joystick_canvas.bind("<B1-Motion>", self.move_knob)
         self.joystick_canvas.bind("<ButtonRelease-1>", self.reset_knob)
 
@@ -686,20 +673,19 @@ class GUI:
 
     def move_knob(self, event):
         self.tracker.stop_exec_cmd_gui = True
+        slow_speed = 250
 
-        if self.tracker.default_speed != 200:
-            self.tracker.default_speed = 200
+        if self.tracker.default_speed != slow_speed:
+            self.tracker.default_speed = slow_speed
             self.tracker.start_motor()
-            self.tracker.send((Commands.SET_DEFAULT_SPEED, 200))
+            self.tracker.send((Commands.SET_DEFAULT_SPEED, slow_speed))
 
-        # ノブの中心を計算
         x, y = event.x, event.y
         dx = x - self.joystick_center[0]
         dy = y - self.joystick_center[1]
         distance = math.sqrt(dx**2 + dy**2)
-        max_distance = self.joystick_radius - self.knob_radius  # ノブの移動可能範囲
+        max_distance = self.joystick_radius - self.knob_radius
 
-        # ノブの移動範囲を制限
         if distance > max_distance:
             scale = max_distance / distance
             dx *= scale
@@ -707,7 +693,6 @@ class GUI:
             x = self.joystick_center[0] + dx
             y = self.joystick_center[1] + dy
 
-        # ノブの位置を更新
         self.joystick_canvas.coords(
             self.knob,
             x - self.knob_radius,
@@ -716,12 +701,10 @@ class GUI:
             y + self.knob_radius,
         )
 
-        # 角度と速度を計算
-        angle = math.atan2(dy, dx)  # ラジアン
-        normalized_distance = min(distance / max_distance, 1)  # 正規化 0~1
-        speed_percentage = int(normalized_distance * 100)  # 速度（%）
+        angle = math.atan2(dy, dx)
+        normalized_distance = min(distance / max_distance, 1)
+        speed_percentage = int(normalized_distance * 100)
 
-        # 左右モーターの速度を計算
         left_speed = 0
         right_speed = 0
 
@@ -853,11 +836,11 @@ class GUI:
             font=self.button_font,
             bg="red",
             fg="yellow",
-            borderwidth=4,  # ボタンの境界線幅を増加
-            relief="solid",  # 境界線を実線に設定
-            highlightbackground="black",  # ハイライト背景色を黒に設定
-            highlightcolor="black",  # ハイライト色を黒に設定
-            highlightthickness=2,  # ハイライトの厚さを設定
+            borderwidth=4,
+            relief="solid",
+            highlightbackground="black",
+            highlightcolor="black",
+            highlightthickness=2,
             command=self.detach_button_clicked,
         )
         self.reset_button.grid(
@@ -882,36 +865,36 @@ class GUI:
             # 左回転ボタン
             self.button_rotate_left = tk.Button(
                 self.controller_frame,
-                text="↺",  # Unicodeの反時計回りの回転矢印
+                text="↺",
                 width=button_width,
                 height=button_height,
                 font=arrow_font,
                 bg="SystemButtonFace",
                 activebackground="green",
-                borderwidth=4,  # ボタンの境界線幅を増加
-                relief="solid",  # 境界線を実線に設定
-                highlightbackground="black",  # ハイライト背景色を黒に設定
-                highlightcolor="black",  # ハイライト色を黒に設定
-                highlightthickness=2,  # ハイライトの厚さを設定
-                command=None,  # イベントで制御
+                borderwidth=4,
+                relief="solid",
+                highlightbackground="black",
+                highlightcolor="black",
+                highlightthickness=2,
+                command=None,
             )
             self.button_rotate_left.grid(row=button_row_top, column=0, padx=5, pady=5)
 
             # 右回転ボタン
             self.button_rotate_right = tk.Button(
                 self.controller_frame,
-                text="↻",  # Unicodeの時計回りの回転矢印
+                text="↻",
                 width=button_width,
                 height=button_height,
                 font=arrow_font,
                 bg="SystemButtonFace",
                 activebackground="green",
-                borderwidth=4,  # ボタンの境界線幅を増加
-                relief="solid",  # 境界線を実線に設定
-                highlightbackground="black",  # ハイライト背景色を黒に設定
-                highlightcolor="black",  # ハイライト色を黒に設定
-                highlightthickness=2,  # ハイライトの厚さを設定
-                command=None,  # イベントで制御
+                borderwidth=4,
+                relief="solid",
+                highlightbackground="black",
+                highlightcolor="black",
+                highlightthickness=2,
+                command=None,
             )
             self.button_rotate_right.grid(row=button_row_top, column=2, padx=5, pady=5)
 
@@ -924,12 +907,12 @@ class GUI:
                 font=arrow_font,
                 bg="SystemButtonFace",
                 activebackground="green",
-                borderwidth=4,  # ボタンの境界線幅を増加
-                relief="solid",  # 境界線を実線に設定
-                highlightbackground="black",  # ハイライト背景色を黒に設定
-                highlightcolor="black",  # ハイライト色を黒に設定
-                highlightthickness=2,  # ハイライトの厚さを設定
-                command=None,  # イベントで制御
+                borderwidth=4,
+                relief="solid",
+                highlightbackground="black",
+                highlightcolor="black",
+                highlightthickness=2,
+                command=None,
             )
             self.button_up.grid(row=button_row_top, column=1, padx=5, pady=5)
 
@@ -1103,7 +1086,7 @@ class GUI:
             self.mode_var,
             self.mode_var.get(),
             *self.mode_options,
-            command=self.mode_selected,  # 選択時に呼び出されるメソッド
+            command=self.mode_selected,
         )
         self.mode_menu.grid(
             row=0, column=1, padx=DEF_MARGIN, pady=(0, 5), sticky=STICKY_LEFT

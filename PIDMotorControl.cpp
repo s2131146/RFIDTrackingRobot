@@ -1,35 +1,32 @@
+#include "HardwareSerial.h"
 #include "PIDMotorControl.h"
 
 PIDMotorControl::PIDMotorControl(uint8_t pwmPin, uint8_t dirPin, Direction baseDir, float wheelDiameterMM, int maxRPM, float kp, float ki, float kd)
     : pwmPin(pwmPin), dirPin(dirPin), baseDir(baseDir),
-      wheelCircumferenceMM(wheelDiameterMM * PI), maxPWM(255), kp(kp), ki(ki), kd(kd),
-      targetSpeedMMPS(0), currentSpeedMMPS(0), integral(0), previousError(0) {
+      wheelCircumferenceMM(wheelDiameterMM * PI), maxPWM(255), kp(kp), ki(ki), kd(kd), currentDir(FORWARD),
+      targetSpeedMMPS(0), currentSpeedMMPS(0), integral(0), previousError(0), speed(0), isForward(true) {
     pinMode(pwmPin, OUTPUT);
     pinMode(dirPin, OUTPUT);
     stop();
 }
 
 float PIDMotorControl::getCurrentSpeed() {
-    return currentSpeedMMPS;
+    return speed;
 }
 
-float PIDMotorControl::getCurrentDirection() {
+Direction PIDMotorControl::getCurrentDirection() {
     return currentDir;
 }
 
+bool PIDMotorControl::getIsForward() {
+    return isForward;
+}
+
 void PIDMotorControl::set(float speedMMPS, Direction direction) {
-    if (baseDir == REVERSE) {
-        direction = direction == FORWARD ? REVERSE : FORWARD;
-    }
+    speed = speedMMPS;
     targetSpeedMMPS = constrain(speedMMPS, -wheelCircumferenceMM * maxPWM / 60.0, wheelCircumferenceMM * maxPWM / 60.0);
     currentDir = direction;
     run();
-}
-
-void PIDMotorControl::updateSpeedFromEncoder(int encoderTicks, int ticksPerRevolution, unsigned long deltaTimeMS) {
-    float rotations = (float)encoderTicks / ticksPerRevolution;
-    float distanceMM = rotations * wheelCircumferenceMM;
-    currentSpeedMMPS = distanceMM / (deltaTimeMS / 1000.0); // mm/s
 }
 
 void PIDMotorControl::run() {
@@ -39,6 +36,7 @@ void PIDMotorControl::run() {
 
 void PIDMotorControl::stop() {
     targetSpeedMMPS = 0;
+    speed = 0;
     analogWrite(pwmPin, 0);
     digitalWrite(dirPin, LOW);
     reset();
@@ -64,7 +62,8 @@ int PIDMotorControl::calculatePID() {
 }
 
 void PIDMotorControl::applyOutput(int output, Direction direction) {
-    bool isForward = direction == FORWARD ? output >= 0 : output < 0;
+    isForward = direction == FORWARD ? output >= 0 : output < 0;
+    isForward = baseDir == FORWARD ? isForward : !isForward;
     int pwmValue = abs(output);
 
     digitalWrite(dirPin, isForward ? HIGH : LOW);

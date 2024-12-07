@@ -6,6 +6,9 @@
 
 class PIDDualMotorControl {
 public:
+    PIDMotorControl* leftMotor;
+    PIDMotorControl* rightMotor;
+    
     PIDDualMotorControl(PIDMotorControl* leftMotor, PIDMotorControl* rightMotor, float wheelBaseMM = 150.0);
     void waitAndStop(float durationMS);
     void wait(float durationMS);
@@ -19,12 +22,16 @@ public:
     void update(int leftEncoderTicks, int rightEncoderTicks, int ticksPerRevolution, unsigned long deltaTimeMS);
 
 private:
-    PIDMotorControl* leftMotor;
-    PIDMotorControl* rightMotor;
-
-    float currentLeftSpeed;
-    float currentRightSpeed;
+    float targetLeftSpeed;
+    float targetRightSpeed;
+    float currentTargetLeftSpeed;
+    float currentTargetRightSpeed;
     float wheelBaseMM;
+
+    unsigned long leftSpeedChangeStartTime;
+    unsigned long rightSpeedChangeStartTime;
+
+    const int SPEED_CHANGE_DURATION = 1500;
 
     void calculateAndSetMotorSpeeds(float leftSpeedMMPS, float rightSpeedMMPS);
 };
