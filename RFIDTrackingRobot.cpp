@@ -1,3 +1,65 @@
+#define OPERATION_TEST 0    // 動作テスト時に 1 にしてください
+
+#if OPERATION_TEST
+#include "PIDDualMotorControl.h"    // Arduino.h も不要です。これだけ入れれば大丈夫！
+
+PIDMotorControl* _motorLeft = nullptr;
+PIDMotorControl* _motorRight = nullptr;
+PIDDualMotorControl* motor = nullptr;
+
+void setup() {
+    TCCR1B = TCCR1B & 0xf8 | 0x01;  // Pin9, Pin10 PWM 31250Hz
+    TCCR2B = TCCR2B & 0xf8 | 0x01;  // Pin3, Pin11 PWM 31250Hz
+
+    // 各モーターの制御ピンを指定 (PWM, DIR)
+    _motorRight = new PIDMotorControl(10, 11, REVERSE);         // 正転時に反転するモーターは、REVERSEと指定してください
+    _motorLeft = new PIDMotorControl(3, 2);
+    motor = new PIDDualMotorControl(_motorLeft, _motorRight);   // 主に使用するモーター制御インスタンス
+}
+
+void loop() {
+    // 基本的に、速度を指定するだけで動きます
+    // 前進する場合は、第二引数は不要です
+    // 秒数指定をする場合は、第三引数で指定できます。
+    motor->set(50, FORWARD, 2000);      // 50の速度で2秒間前進
+    motor->stop(500);                   // 0.5秒停止
+    motor->set(300, REVERSE, 2000);     // 300の速度で2秒間後退
+    motor->stop(500);
+
+    // motor->set(300);                 // 300の速度で停止するまで前進
+    // motor->set(300, REVERSE);        // 300の速度で停止するまで後退
+
+    for (int i = 0; i < 300; i += 10) {
+        motor->setLeft(i);                  // 左モーターの速度を指定
+        motor->setRight(300 - i, REVERSE);  // 右モーターの速度を指定
+
+        // 警告: Arduino標準関数の delay() は "使用しないで" ください！
+        // 代わりに wait() 関数を使用してください
+        // delay() を使用するとモーターの制御が失われ、暴走する可能性があります
+        motor->wait(100);
+    }
+
+    motor->stop(500);
+    motor->rotateLeft(200, 2000);       // 2秒間左転回
+    motor->stop(500);
+    motor->rotateRight(200, 2000);      // 2秒間右転回
+    motor->stop(500);
+
+    // 注意: run() 関数は "常に" 実行してください！
+    // loop() 関数の末尾に、必ず実行される形で配置してください
+    motor->run();
+}
+
+#endif
+
+#if !OPERATION_TEST
+/**
+ * @file RFIDTrackingRobot.cpp
+ * @author Metoki Towa
+ * @brief RFIDを用いた視覚的遮蔽に頑健な自動追尾ロボットのモーター制御プログラム
+ * @version 1.0
+ * @date 2024-12-08
+ */
 #include "Commands.hpp"
 #include "PIDDualMotorControl.h"
 
@@ -11,7 +73,6 @@ namespace RFIDTR {
 
 int DEFAULT_SPEED = 300;
 int currentSpeed = DEFAULT_SPEED;
-const int TIME_APPLY_SPEED = 1500;
 
 String prevCommand = Commands::STOP;
 
@@ -30,7 +91,6 @@ void calculateDistance() {
     float rightSpeed = _motorRight->getCurrentSpeed() * WHEEL_RADIUS / 1000.0;
 
     float linearVelocity = (leftSpeed + rightSpeed) / 2.0;
-    float angularVelocity = (rightSpeed - leftSpeed) / WHEEL_BASE;
 
     totalDistance += (linearVelocity * deltaTime);
 }
@@ -45,6 +105,8 @@ float getMMPS(int percent) {
  * @brief 左モーター速度を設定
  *
  * @param percent 左モーターの速度パーセンテージ
+ * @param invert 逆転
+ * @param fixed MMPS直接指定
  */
 void setLeftMotorSpeed(int percent, bool invert = false, bool fixed = false) {
     int speed = fixed ? percent : getMMPS(percent);
@@ -55,6 +117,8 @@ void setLeftMotorSpeed(int percent, bool invert = false, bool fixed = false) {
  * @brief 右モーター速度を設定
  *
  * @param percent 右モーターの速度パーセンテージ
+ * @param invert 逆転
+ * @param fixed MMPS直接指定
  */
 void setRightMotorSpeed(int percent, bool invert = false, bool fixed = false) {
     int speed = fixed ? percent : getMMPS(percent);
@@ -77,7 +141,7 @@ void goFoward() {
 }
 
 void goBack() {
-    motor->set(300, REVERSE);
+    motor->set(200, REVERSE);
 }
 
 void stop() {
@@ -104,7 +168,6 @@ void turnLeft() {
 
 unsigned long lastCheck = millis();
 
-// コマンドを処理
 void executeCommand(String cmdStr) {
     model::Command cmd(cmdStr);
     String command = cmd.getCommand();
@@ -255,7 +318,7 @@ void loop() {
 
     unsigned long currentTime = millis();
 
-    if (currentTime - RFIDTR::lastCheck > 500) {
+    if (currentTime - RFIDTR::lastCheck > 1000) {
         RFIDTR::stop();
     }
 
@@ -263,3 +326,5 @@ void loop() {
 
     motor->run();
 }
+
+#endif

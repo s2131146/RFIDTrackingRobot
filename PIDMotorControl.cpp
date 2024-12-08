@@ -1,4 +1,10 @@
-#include "HardwareSerial.h"
+/**
+ * @file PIDMotorControl.cpp
+ * @author Metoki Towa
+ * @brief PIDを用いたモーター制御プログラム
+ * @version 1.0
+ * @date 2024-12-07
+ */
 #include "PIDMotorControl.h"
 
 PIDMotorControl::PIDMotorControl(uint8_t pwmPin, uint8_t dirPin, Direction baseDir, float wheelDiameterMM, int maxRPM, float kp, float ki, float kd)

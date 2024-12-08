@@ -1,3 +1,10 @@
+/**
+ * @file PIDMotorControl.h
+ * @author Metoki Towa
+ * @brief PIDを用いたモーター制御プログラム
+ * @version 1.0
+ * @date 2024-12-07
+ */
 #ifndef PID_MOTOR_CONTROL_H
 #define PID_MOTOR_CONTROL_H
 

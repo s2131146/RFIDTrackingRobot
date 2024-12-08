@@ -1,5 +1,10 @@
-#include "HardwareSerial.h"
-#include "Arduino.h"
+/**
+ * @file PIDDualMotorControl.cpp
+ * @author Metoki Towa
+ * @brief オムニホイールロボット制御プログラム
+ * @version 1.0
+ * @date 2024-12-07
+ */
 #include "PIDDualMotorControl.h"
 
 PIDDualMotorControl::PIDDualMotorControl(PIDMotorControl* leftMotor, PIDMotorControl* rightMotor, float wheelBaseMM)
@@ -61,11 +66,12 @@ void PIDDualMotorControl::setRight(float speedMMPS, Direction direction) {
     targetRightSpeed = (direction == FORWARD) ? speedMMPS : -speedMMPS;
 }
 
-void PIDDualMotorControl::stop() {
+void PIDDualMotorControl::stop(float durationMS) {
     targetLeftSpeed = 0;
     targetRightSpeed = 0;
     leftMotor->stop();
     rightMotor->stop();
+    wait(durationMS);
 }
 
 void PIDDualMotorControl::run() {
