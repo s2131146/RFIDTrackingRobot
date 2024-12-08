@@ -266,14 +266,6 @@ class Obstacles:
         if self.timer.yet("invert", 0.7, remove=True) and not most_common_wall_parallel:
             most_common_wall_parallel = self.OBS_PARALLEL_FIX_INVERT
 
-        # ノイズを考慮し、一瞬の壁は無視
-        if most_common_wall_position != self.last_wall_position:
-            self.timer.register("noise")
-            if self.timer.yet("noise", 0.1, remove=True):
-                most_common_wall_position = self.last_wall_position
-        else:
-            self.timer.remove("noise")
-
         if self.timer.passed("detection", self.detection_interval, update=True):
             # 履歴から最も多い壁の位置を取得
             most_common_wall_position = Counter(

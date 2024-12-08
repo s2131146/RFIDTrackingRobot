@@ -85,21 +85,21 @@ void stop() {
 }
 
 void rotateRight() {
-    motor->rotateRight(200);
+    motor->rotateRight(150);
 }
 
 void rotateLeft() {
-    motor->rotateLeft(200);
+    motor->rotateLeft(150);
 }
 
 void turnRight() {
-    setRightMotorSpeed(40);
+    setRightMotorSpeed(20);
     setLeftMotorSpeed(100);
 }
 
 void turnLeft() {
     setRightMotorSpeed(100);
-    setLeftMotorSpeed(40);
+    setLeftMotorSpeed(20);
 }
 
 unsigned long lastCheck = millis();

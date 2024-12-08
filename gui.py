@@ -732,14 +732,14 @@ class GUI:
             right_speed = speed_percentage
             command = 2
         elif angle > 1.7 and angle < 3:  # 左回転（後退方向）
-            left_speed = speed_percentage * (
+            right_speed = speed_percentage * (
                 1 - abs(-angle + math.pi / 2) / (math.pi / 2)
             )
-            right_speed = speed_percentage
+            left_speed = speed_percentage
             command = 2
         elif angle < 1.4 and angle > 0.15:  # 右回転（後退方向）
-            left_speed = speed_percentage
-            right_speed = speed_percentage * (
+            right_speed = speed_percentage
+            left_speed = speed_percentage * (
                 1 - abs(-angle + math.pi / 2) / (math.pi / 2)
             )
             command = 2
@@ -1244,6 +1244,7 @@ class GUI:
     def command_stop_start(self):
         self.tracker.lost_target_command = Commands.STOP_TEMP
         self.tracker.lost_target_avoid_wall = Position.NONE
+        self.tracker.tracking_target_invisible = False
         if self.tracker.stop:
             self.tracker.start_motor()
         else:
@@ -1325,10 +1326,11 @@ class GUI:
 
     def record_button_clicked(self):
         if not self.recording:
-            self.rec_button.config(text="STOP REC", fg="red")
-            self.init_timer()
-            self.tracker.send(Commands.RESET_DISTANCE)
-            self.start_recording()
+            if not self.converting:
+                self.rec_button.config(text="STOP REC", fg="red")
+                self.init_timer()
+                self.tracker.send(Commands.RESET_DISTANCE)
+                self.start_recording()
         else:
             if not self.converting:
                 self.tracker.stop_motor()

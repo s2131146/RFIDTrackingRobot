@@ -11,7 +11,6 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 
 import threading
 import cv2
-import time
 import math
 import tkinter as tk
 import numpy as np
@@ -53,8 +52,8 @@ DEBUG_ENABLE_TRACKING = True
 DEBUG_SLOW_SPEED = 200
 
 # 壁回避時の決め打ちパラメータ
-DELAY_SPEED_FAST = 1.5
-DELAY_SPEED_SLOW = 3
+DELAY_SPEED_FAST = 0.5
+DELAY_SPEED_SLOW = 2.5
 
 BEEP_SOUND_PATH = "sound/beep.mp3"
 
@@ -111,10 +110,10 @@ class Tracker:
         self.playing_beep = False
 
         # 自動停止の距離閾値（占有率）
-        self.AUTO_STOP_OCCUPANCY_RATIO = 0.6
+        self.AUTO_STOP_OCCUPANCY_RATIO = 0.4
 
         # 近接の閾値（占有率）
-        self.CLOSE_OCCUPANCY_RATIO = 0.5
+        self.CLOSE_OCCUPANCY_RATIO = 0.3
 
         # 自動停止状態を管理するフラグ
         self.auto_stop = False
@@ -404,6 +403,13 @@ class Tracker:
 
     def apply_motor_wall(self, wall_direction: str) -> Tuple[int, int]:
         """壁の位置に基づいて、壁に沿って進むためのモーター出力を計算"""
+        if (
+            self.tracking_target_invisible
+            and self.lost_target_avoid_wall != Position.NONE
+        ):
+            self.motor_power_l = 100
+            self.motor_power_r = 100
+
         base_power = max(self._calculate_base_speed(), 40)
         low_power = 40 if not self.too_close_wall else 0
         high_motor = base_power if not DEBUG_INVERT_MOTOR else low_power
@@ -438,9 +444,10 @@ class Tracker:
             self.motor_power_r = high_motor
 
         # 平行処理を行わない場合
-        skip_parallel = (
-            Position.convert_to_rotate(self.wall) != self.lost_target_command
-            and self.lost_target_command != Commands.STOP_TEMP
+        skip_parallel = Position.convert_to_rotate(
+            self.wall
+        ) != self.lost_target_command and (
+            self.lost_target_command != Commands.STOP_TEMP
             or (
                 self.tracking_target_invisible
                 and self.lost_target_command == Commands.STOP_TEMP
@@ -473,6 +480,8 @@ class Tracker:
 
     def _calculate_base_speed(self):
         """占有率に基づいて基礎速度を計算"""
+        if self.target_position == Position.NONE:
+            return 100
         occupancy_thresholds = [0.0, 0.15, 0.40, 0.60, 1.0]
         base_speeds = [100, 100, 80, 60, 0]
         occupancy = self.occupancy_ratio
@@ -494,33 +503,39 @@ class Tracker:
         half_width = self.frame_width / 2
         normalized_error = target_x / (0.85 * half_width)
         normalized_error = max(-1.0, min(1.0, normalized_error))
-        steer_strength = 50
 
-        if normalized_error < 0:
+        steer_strength = 70
+        steer_multiplier = 1.2
+
+        adjusted_error = normalized_error * steer_multiplier
+        adjusted_error = max(-1.0, min(1.0, adjusted_error))
+
+        if adjusted_error < 0:
             self.motor_power_l = max(
-                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                0, min(100, base_speed - abs(adjusted_error) * steer_strength)
             )
             self.motor_power_r = max(
-                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                0, min(100, base_speed + abs(adjusted_error) * steer_strength)
             )
-        elif normalized_error > 0:
+        elif adjusted_error > 0:
             self.motor_power_r = max(
-                0, min(100, base_speed - abs(normalized_error) * steer_strength)
+                0, min(100, base_speed - abs(adjusted_error) * steer_strength)
             )
             self.motor_power_l = max(
-                0, min(100, base_speed + abs(normalized_error) * steer_strength)
+                0, min(100, base_speed + abs(adjusted_error) * steer_strength)
             )
         else:
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
 
         if DEBUG_INVERT_MOTOR:
-            temp = self.motor_power_l
-            self.motor_power_l = self.motor_power_r
-            self.motor_power_r = temp
+            self.motor_power_l, self.motor_power_r = (
+                self.motor_power_r,
+                self.motor_power_l,
+            )
 
-    def get_target_pos_str(self, target_center_x):
-        return self.target_processor.get_target_pos_str(target_center_x)
+    def get_target_pos_str(self, target_center_x, current_box):
+        return self.target_processor.get_target_pos_str(target_center_x, current_box)
 
     def stop_motor(self, no_target=False):
         """モーターを停止"""
@@ -563,13 +578,17 @@ class Tracker:
             self.target_position == Position.NONE and not self.tracking_target_invisible
         ) or (self.motor_power_l != 0 or self.motor_power_r != 0)
 
-        if no_target and not self.RFID_ONLY_MODE:
+        if no_target and not self.RFID_ONLY_MODE and not self.tracking_target_invisible:
             return True
 
         if (
             (self.wall != Obstacles.OBS_NONE and self.avoid_wall)
             or (Obstacles.is_fix(self.wall_parallel))
             or self.RFID_ONLY_MODE
+            or (
+                self.lost_target_avoid_wall != Position.NONE
+                and self.tracking_target_invisible
+            )
         ):
             self.apply_motor_wall(self.wall)
 
@@ -705,6 +724,7 @@ class Tracker:
         if len(detected_targets) > 0:
             self.stop_beep()
             self.timer.remove("find_target")
+            self.timer.remove("rfid_lost")
             self.target = detected_targets[0]
             if not self.timer.has(key):
                 self.timer.register(key)
@@ -790,8 +810,8 @@ class Tracker:
         if selected_target:
             result = self.target_processor.process_target([selected_target], self.frame)
             if result is not None:
-                target_center_x, self.target_x, _ = result
-                self.target_position = self.get_target_pos_str(target_center_x)
+                target_center_x, self.target_x, bbox = result
+                self.target_position = self.get_target_pos_str(target_center_x, bbox)
 
                 if self.time_detected >= 0.3:
                     self.timer.register("t_l_seen")
@@ -833,16 +853,50 @@ class Tracker:
         self.motor_power_r = 0
 
     lost_target_avoid_wall = Position.NONE
+    find_wall = False
+
+    in_track_out = False
 
     def _handle_no_targets(self):
         """対象が検出されなかった場合の処理を行う"""
+        lw_passed = self.timer.passed(
+            "l_w_avoid", self.map_value_to_scale(self.default_speed)
+        )
+        # 壁が見つからないとき、壁を探す
         if (
-            self.lost_target_avoid_wall != Position.NONE
+            not self.find_target_rotate
+            and not self.tracking_target_invisible
+            and self.lost_target_command != Commands.STOP_TEMP
+            and (self.lost_target_avoid_wall != self.wall or self.wall == Position.NONE)
+            and not self.stop_exec_cmd_gui
+            and not self.stop
+            and not self.in_track_out
+        ):
+            self.timer.update("t_l_seen")
+            if self.find_wall:
+                return
+            self.find_wall = True
+            self.stop_exec_cmd = True
+            self.send(Position.convert_to_turn(self.lost_target_command))
+            return
+        else:
+            if self.find_wall:
+                self.find_wall = False
+                self.stop_exec_cmd = False
+                self.send(
+                    Position.convert_to_turn(Position.invert(self.lost_target_command))
+                )
+
+        # 壁に沿って対象を探す
+        if (
+            (
+                self.wall != Position.NONE
+                or (self.wall == Position.NONE and self.in_track_out)
+            )
+            and self.lost_target_avoid_wall != Position.NONE
             and Position.convert_to_rotate(self.lost_target_avoid_wall)
             == self.lost_target_command
-            and not self.timer.passed(
-                "l_w_avoid", self.map_value_to_scale(self.default_speed)
-            )
+            and not lw_passed
             and not self.find_target_rotate
         ):
             if self.lost_target_command == self.wall:
@@ -853,7 +907,9 @@ class Tracker:
                 self.timer.update("l_w_avoid")
             self.timer.update("t_l_seen")
 
+            self.in_track_out = True
             self.tracking_target_invisible = True
+            self.default_speed = 300
             return
 
         self.last_wall_avoid = Position.NONE
@@ -863,6 +919,7 @@ class Tracker:
             logger.info("Executing lost command")
             self.lost_target_avoid_wall = Position.NONE
             self.find_target_rotate = False
+            self.in_track_out = False
             if not self.stop and not self.stop_exec_cmd_gui:
                 self.exec_lost_target_command()
         elif self.RFID_ENABLED:
@@ -880,7 +937,12 @@ class Tracker:
 
         bk_wall = self.wall
         if len(result) == 2:
-            if not self.auto_stop_obs and not self.stop:
+            if (
+                not self.auto_stop_obs
+                and not self.stop
+                and not self.stop_exec_cmd_gui
+                and not self.stop_exec_cmd_backoff
+            ):
                 self.stop_motor()
                 self.auto_stop_obs = True
             _, self.depth_frame = result
@@ -937,6 +999,11 @@ class Tracker:
         ):
             self.timer.update("l_w_avoid")
             self.lost_target_avoid_wall = self.wall
+            if (
+                self.target_position != Commands.STOP_TEMP
+                and self.target_position != Position.NONE
+            ):
+                self.lost_target_avoid_wall = self.target_position
 
         if self.avoid_wall or (self.wall_parallel and not skip_parallel):
             self.last_wall_detect = self.wall
@@ -978,6 +1045,7 @@ class Tracker:
             ):
                 self.timer.register("rfid_lost")
                 if self.timer.passed("rfid_lost", 3):
+                    logger.info("Lost RFID Signal for 3 secs.")
                     self.play_beep()
                 return
             if self.target_position != Commands.STOP_TEMP:
@@ -1006,7 +1074,7 @@ class Tracker:
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
         if (self.gui.var_slow.get() or self.mode == self.Mode.RFID_ONLY.name) and (
-            not self.stop_exec_cmd_gui and self.default_speed != DEBUG_SLOW_SPEED
+            not self.stop_exec_cmd_gui and self.default_speed > DEBUG_SLOW_SPEED
         ):
             self.default_speed = DEBUG_SLOW_SPEED
         if self._def_spd_bk != self.default_speed:
@@ -1034,22 +1102,26 @@ class Tracker:
         ):
 
             def func():
+                logger.info("Backing off to avoid obstacle...")
                 self.timer.register(key)
                 self.send(Commands.GO_BACK)
 
+            logger.info("Obstacle detected. Stopping for sec.")
             self.stop_exec_cmd_backoff = True
             self.send(Commands.STOP_TEMP)
             self.root.after(1000, func)
 
         # 後退したら転回
         if (
-            self.timer.passed(key, 2.5, remove=True)
+            self.timer.passed(key, 1.5, remove=True)
             and self.stop_exec_cmd_backoff
             and self.gui.var_enable_tracking.get()
         ):
+            logger.info("Backoff completed. Try to rotate")
             self.timer.register("bk_rotate")
             self.stop_exec_cmd_backoff = False
             if not self.too_close_wall:
+                logger.info("Backoff Executing lost command.")
                 self.exec_lost_target_command()
 
         # インターバル経過したらモーター出力を送信
@@ -1129,7 +1201,7 @@ class Tracker:
             f"{self.seg} {math.floor(self.frame_width)} x {math.floor(self.frame_height)} backoff: {self.stop_exec_cmd_backoff} "
             f"avr_fps: {math.floor(self.avr_fps)} fps: {math.floor(self.fps)} "
             f"t_position: {self.target_position}\n"
-            f"t_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr} in_center: {center}\n"
+            f"t_x: {self.target_x} mpl: {self.motor_power_l} mpr: {self.motor_power_r} bkl: {self.bkl} bkr: {self.bkr} in_center: {center} tr_out: {self.in_track_out}\n"
             f"ip: {self.serial.tcp_ip} STOP: {self.stop or self.stop_temp} serial_received: {self.received_serial}\n"
             f"obstacle_detected: {self.obs_detected} obs_pos: {self.obs_pos} wall: {self.wall} stop_obs: {self.auto_stop_obs}\n"
             f"avoid: {self.avoid_wall} track_out: {self.tracking_target_invisible} lost_wall: {self.lost_target_avoid_wall} beep: {self.playing_beep} RF_dir: {self.rfid_reader.get_direction()}\n"

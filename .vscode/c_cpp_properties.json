@@ -13,12 +13,17 @@
                 "-fno-threadsafe-statics",
                 "-Wno-error=narrowing"
             ],
-            "intelliSenseMode": "gcc-x64",
+            "intelliSenseMode": "msvc-x64",
             "includePath": [
-                "C:\\Users\\admin\\Desktop\\RFIDTrackingRobot"
+                "${workspaceFolder}"
             ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}"
+                ]
+            },
             "forcedInclude": [
-                "C:\\Users\\metow\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\cores\\arduino\\Arduino.h"
+                "C:\\Users\\admin\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\cores\\arduino\\Arduino.h"
             ],
             "cStandard": "c11",
             "cppStandard": "c++11",
@@ -527,7 +532,7 @@
                 "__BUILTIN_AVR_FMUL=1",
                 "USBCON"
             ],
-            "compilerPath": ""
+            "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.41.34120/bin/Hostx64/x64/cl.exe"
         }
     ]
 }

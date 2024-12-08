@@ -71,6 +71,7 @@ class TargetProcessor:
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
+        self.last_bbox = None
 
     def reset_target(self):
         """保持している色と異なる、最もカメラに近いターゲットを新たな対象に選び、保持色をリセットします。"""
@@ -106,7 +107,7 @@ class TargetProcessor:
             self.tracker.CLOSE_OCCUPANCY_RATIO,
             self.tracker.AUTO_STOP_OCCUPANCY_RATIO,
         ]
-        speeds = [500, 300, 150]
+        speeds = [500, 250, 150]
 
         occupancy = self.tracker.occupancy_ratio
 
@@ -130,14 +131,18 @@ class TargetProcessor:
 
         return default_speed
 
-    def get_target_pos_str(self, target_center_x):
+    def get_target_pos_str(self, target_center_x, current_bbox):
         import tracker
 
-        # X座標の中心を0に調整
+        # 前回のバウンディングボックスを取得
+        last_bbox = self.last_bbox
+
+        # バウンディングボックスが存在する場合、位置を計算
         x_centered = target_center_x - (self.frame_width // 2)
 
         # 中央の判定幅を画面幅の6分の1に設定
         central_threshold = self.frame_width // 10
+        target_position = Position.CENTER
 
         if x_centered < -central_threshold:
             target_position = Position.LEFT
@@ -154,7 +159,33 @@ class TargetProcessor:
                 else Commands.ROTATE_LEFT
             )
         else:
-            target_position = Position.CENTER
+            # 画面中央のバウンディングボックスがどちらに消えたかで判断
+            if last_bbox and current_bbox:
+                last_x_min, _, last_x_max, _ = last_bbox
+                crr_x_min, y_min, crr_x_max, y_max = current_bbox
+
+                if y_max - y_min > self.frame_height * 0.8:
+                    target_position = Position.CENTER
+                    self.tracker.lost_target_command = Commands.STOP_TEMP
+                else:
+                    if last_x_min < crr_x_min:  # 右方向に消えた
+                        target_position = Position.RIGHT
+                        self.tracker.lost_target_command = (
+                            Commands.ROTATE_RIGHT
+                            if not tracker.DEBUG_INVERT_MOTOR
+                            else Commands.ROTATE_LEFT
+                        )
+                    elif last_x_max > crr_x_max:  # 左方向に消えた
+                        target_position = Position.LEFT
+                        self.tracker.lost_target_command = (
+                            Commands.ROTATE_LEFT
+                            if not tracker.DEBUG_INVERT_MOTOR
+                            else Commands.ROTATE_RIGHT
+                        )
+                    else:  # 中央で消えた場合
+                        target_position = Position.CENTER
+
+        self.last_bbox = current_bbox
 
         return target_position
 
@@ -310,7 +341,6 @@ class TargetProcessor:
     def process_target(
         self, targets: List[Target], frame
     ) -> Optional[Tuple[int, int, List[Tuple[int, int, int, int]]]]:
-        target_bboxes = []
         selected_target = None
 
         if len(targets) == 0:
@@ -370,16 +400,14 @@ class TargetProcessor:
                 cv2.LINE_AA,
             )
 
-            target_bboxes.append(
-                (
-                    selected_target.x1,
-                    selected_target.y1,
-                    selected_target.x2,
-                    selected_target.y2,
-                )
+            target_bbox = (
+                selected_target.x1,
+                selected_target.y1,
+                selected_target.x2,
+                selected_target.y2,
             )
 
-            return target_center_x, target_x, target_bboxes
+            return target_center_x, target_x, target_bbox
 
         return None
 
