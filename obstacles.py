@@ -153,7 +153,7 @@ class Obstacles:
         target_x: int,
         targets: List[Optional[Target]] = None,
         target_lost_command: str = None,
-    ) -> Tuple[str, bool, Optional[np.ndarray], str, bool, bool]:
+    ) -> Tuple[str, bool, Optional[np.ndarray], str, bool, bool, float]:
         """
         障害物の処理を行う
 
@@ -236,7 +236,7 @@ class Obstacles:
         self.avoid_walls_history.append(wall_in_center)
 
         # 障害物が目の前にあるかを判断
-        overall_direction = self.determine_obstacle_position_full(
+        overall_direction, coverge = self.determine_obstacle_position_full(
             wall_mask, closest_wall_depth
         )
 
@@ -325,11 +325,12 @@ class Obstacles:
                 False,
                 closest_wall_depth,
                 farthest_wall_depth,
+                coverge,
             )
 
         # 目の前に全面的な障害物がある場合
         if overall_direction and closest_wall_depth < 400:
-            return self.OBS_FULL, obstacle_visual
+            return self.OBS_FULL, obstacle_visual, coverge
 
         # 最終結果を返す
         return (
@@ -340,11 +341,12 @@ class Obstacles:
             too_close,
             closest_wall_depth,
             farthest_wall_depth,
+            coverge,
         )
 
     def determine_obstacle_position_full(
         self, wall_mask: np.ndarray, close_depth: float
-    ) -> bool:
+    ) -> Tuple[bool, float]:
         """
         障害物が目の前に全面的に存在するかを判定
 
@@ -359,9 +361,9 @@ class Obstacles:
         total_coverage = np.sum(wall_mask) / wall_mask.size
 
         if (total_coverage >= 0.7 and close_depth <= 350) or total_coverage >= 0.8:
-            return True
+            return True, total_coverage
 
-        return False
+        return False, total_coverage
 
     def is_target_in_center_area(
         self, target_bbox: Optional[Tuple[int, int, int, int]]

@@ -260,7 +260,7 @@ class RFIDReader:
         epc_command = "Q"  # EPC読み取りコマンド
         response = self.send_command(epc_command)
 
-        if RFID_ACTIVE in response:
+        if RFID_CARD in response:
             with self.lock:
                 self.detection_counts[self.current_antenna] += 1
 

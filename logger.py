@@ -13,7 +13,7 @@ if os.path.exists(LOG_FILENAME):
     os.remove(LOG_FILENAME)
 
 file_handler = logging.FileHandler(LOG_FILENAME)
-file_handler.setLevel(logging.INFO)
+file_handler.setLevel(logging.DEBUG)
 
 if DEBUG_CONSOLE:
     console_handler = logging.StreamHandler()
