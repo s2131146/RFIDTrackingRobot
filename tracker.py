@@ -518,48 +518,30 @@ class Tracker:
         half_width = self.frame_width / 2
         normalized_error = target_x / (0.85 * half_width)
         normalized_error = max(-1.0, min(1.0, normalized_error))
+        steer_strength = 50
 
-        steer_strength = 100
-        steer_multiplier = 1.5
-
-        # ステアリング調整: 占有率が低くても曲がりやすくし、100%出力になる距離を遠く設定
-        max_effective_ratio = 0.2  # 100%出力を適用する占有率
-        min_effective_ratio = 0.1  # ステアリングが最大になる占有率
-        if self.occupancy_ratio <= min_effective_ratio:
-            distance_factor = 1.0  # 占有率が低い場合は曲がりにくく
-        elif self.occupancy_ratio >= max_effective_ratio:
-            distance_factor = 0.5  # 100%出力になる占有率
-        else:
-            # 線形補間で占有率に応じてdistance_factorを計算
-            slope = (0.5 - 1.0) / (max_effective_ratio - min_effective_ratio)
-            distance_factor = 1.0 + slope * (self.occupancy_ratio - min_effective_ratio)
-
-        adjusted_error = normalized_error * steer_multiplier / distance_factor
-        adjusted_error = max(-1.0, min(1.0, adjusted_error))
-
-        if adjusted_error < 0:
+        if normalized_error < 0:
             self.motor_power_l = max(
-                0, min(100, base_speed - abs(adjusted_error) * steer_strength)
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
             )
             self.motor_power_r = max(
-                0, min(100, base_speed + abs(adjusted_error) * steer_strength)
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
             )
-        elif adjusted_error > 0:
+        elif normalized_error > 0:
             self.motor_power_r = max(
-                0, min(100, base_speed - abs(adjusted_error) * steer_strength)
+                0, min(100, base_speed - abs(normalized_error) * steer_strength)
             )
             self.motor_power_l = max(
-                0, min(100, base_speed + abs(adjusted_error) * steer_strength)
+                0, min(100, base_speed + abs(normalized_error) * steer_strength)
             )
         else:
             self.motor_power_l = base_speed
             self.motor_power_r = base_speed
 
         if DEBUG_INVERT_MOTOR:
-            self.motor_power_l, self.motor_power_r = (
-                self.motor_power_r,
-                self.motor_power_l,
-            )
+            temp = self.motor_power_l
+            self.motor_power_l = self.motor_power_r
+            self.motor_power_r = temp
 
     def get_target_pos_str(self, target_center_x, current_box):
         return self.target_processor.get_target_pos_str(target_center_x, current_box)

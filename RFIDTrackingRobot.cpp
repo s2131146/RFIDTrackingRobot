@@ -149,11 +149,11 @@ void stop() {
 }
 
 void rotateRight() {
-    motor->rotateRight(150);
+    motor->rotateRight(100);
 }
 
 void rotateLeft() {
-    motor->rotateLeft(150);
+    motor->rotateLeft(100);
 }
 
 void turnRight() {

@@ -4,8 +4,8 @@ import re
 import subprocess
 import threading
 import time
-import dxcam
 import cv2
+import mss
 import numpy as np
 import tkinter as tk
 import logger
@@ -113,9 +113,6 @@ class GUI:
             if self.recording:
                 self.stop_recording()
 
-    prev_status = ""
-    skipped = False
-
     def record_screen(self):
         width = self.root.winfo_width()
         height = self.root.winfo_height()
@@ -126,56 +123,58 @@ class GUI:
         out_filename = AVI_NAME
         out = cv2.VideoWriter(out_filename, fourcc, 30.0, (width, height))
 
-        cam = dxcam.create(output_color="BGR")
         target_frame_interval = 1.0 / 30.0
         frame_count = 0
         last_frame = None
         self.timer.register("record", False)
         self.timer.register("frame", False)
 
-        while self.recording:
-            self.timer.update("frame")
+        with mss.mss() as sct:
+            width = self.root.winfo_width()
+            height = self.root.winfo_height()
+            out_filename = AVI_NAME
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            out = cv2.VideoWriter(out_filename, fourcc, 30.0, (width, height))
 
-            x1 = max(0, self.root.winfo_rootx())
-            y1 = max(0, self.root.winfo_rooty())
-            x2 = x1 + width
-            y2 = y1 + height
+            while self.recording:
+                self.timer.update("frame")
 
-            if x2 > screen_width:
-                x2 = screen_width
-            if y2 > screen_height:
-                y2 = screen_height
+                x1 = max(0, self.root.winfo_rootx())
+                y1 = max(0, self.root.winfo_rooty())
+                x2 = x1 + width
+                y2 = y1 + height
 
-            monitor = (x1, y1, x2, y2)
+                if x2 > screen_width:
+                    x2 = screen_width
+                if y2 > screen_height:
+                    y2 = screen_height
 
-            # 画面全体をキャプチャ
-            sct_img = cam.grab(region=monitor)
-            if sct_img is not None:
-                img = np.array(sct_img, dtype=np.uint8)
-                frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                self.prev_status = self.label_status.cget("text")
-                self.update_status("Failed to grab frame.")
-                self.skipped = True
-                last_frame = frame
-            else:
-                frame = last_frame
+                monitor = (x1, y1, x2, y2)
 
-            expected_frame_count = int(
-                self.timer.get_elapsed("record") / target_frame_interval
-            )
+                sct_img = sct.grab(monitor)
+                if sct_img is not None:
+                    img = np.array(sct_img, dtype=np.uint8)
+                    frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                    last_frame = frame
+                else:
+                    frame = last_frame
 
-            if self.skipped:
-                self.skipped = False
-                self.update_status(self.prev_status)
+                expected_frame_count = int(
+                    self.timer.get_elapsed("record") / target_frame_interval
+                )
 
-            # 不足しているフレームを埋め込む
-            while frame_count < expected_frame_count and self.recording:
-                out.write(frame)
-                frame_count += 1
+                # 不足しているフレームを埋め込む
+                while frame_count < expected_frame_count and self.recording:
+                    out.write(frame)
+                    frame_count += 1
 
-            sleep_time = max(0, target_frame_interval - self.timer.get_elapsed("frame"))
-            time.sleep(sleep_time)
+                sleep_time = max(
+                    0, target_frame_interval - self.timer.get_elapsed("frame")
+                )
+                time.sleep(sleep_time)
 
+        self.timer.remove("record")
+        self.timer.remove("frame")
         out.release()
         cv2.destroyAllWindows()
 

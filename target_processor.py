@@ -67,7 +67,7 @@ class TargetProcessor:
         self.prev_command = Commands.STOP_TEMP
         self.last_target_features = None
         self.current_target = None
-        self.color_tolerance = 15
+        self.color_tolerance = 10
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
@@ -253,7 +253,7 @@ class TargetProcessor:
             selected_target = self.select_target_by_color(
                 detected_targets,
                 self.target_clothing_color,
-                120 if no_target else self.color_tolerance,
+                60 if no_target else self.color_tolerance,
             )
 
         # 光や映っている範囲で色が変わるため、逐一更新
