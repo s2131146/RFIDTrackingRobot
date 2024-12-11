@@ -41,6 +41,7 @@ TIMER_ACTIVE = 0
 TIMER_START = 1
 TIMER_TRACKING = 2
 TIMER_DATETIME = 3
+TIMER_RFID = 4
 
 JOYSTICK = True
 
@@ -90,6 +91,7 @@ class GUI:
         self.timer.register("gui_update", show=False)
         self.timer.register("start", show=False)
         self.timer.register("tracking", show=False)
+        self.timer.register("rfid_elapsed", show=False)
 
     def start_recording(self):
         self.progress_var = tk.DoubleVar()
@@ -535,12 +537,20 @@ class GUI:
             row=3, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
+        self.label_timer_rfid = tk.Label(
+            self.button_panel_frame,
+            font=timer_font,
+        )
+        self.label_timer_rfid.grid(
+            row=4, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+        )
+
         self.label_miss_count = tk.Label(
             self.button_panel_frame,
             font=timer_font,
         )
         self.label_miss_count.grid(
-            row=4, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=5, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
         self.label_tracking_rate = tk.Label(
@@ -548,7 +558,7 @@ class GUI:
             font=timer_font,
         )
         self.label_tracking_rate.grid(
-            row=5, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=6, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
         self.label_move_distance = tk.Label(
@@ -556,12 +566,13 @@ class GUI:
             font=timer_font,
         )
         self.label_move_distance.grid(
-            row=6, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
+            row=7, column=0, columnspan=3, padx=0, pady=0, sticky=STICKY_RIGHT
         )
 
     def init_timer(self):
         self.elapsed_start = 0.0
         self.elapsed_tracking = 0.0
+        self.elapsed_rfid = 0.0
 
     def formatted_time(self, id: int):
         label = ""
@@ -574,6 +585,9 @@ class GUI:
         if id == TIMER_TRACKING:
             label = "TRACKING"
             elapsed_time = self.elapsed_tracking
+        if id == TIMER_RFID:
+            label = "RFID"
+            elapsed_time = self.elapsed_rfid
         if id == TIMER_DATETIME:
             now = datetime.now()
             return f"{now.strftime('%H:%M:%S')}.{now.microsecond // 10000:02d}"
@@ -609,12 +623,23 @@ class GUI:
             ):
                 self.elapsed_tracking += self.timer.get_elapsed("tracking")
 
+            # TRACKING
+            if (
+                enable_tracking
+                and max(
+                    self.tracker.rfid_reader.get_detection_counts().values(), default=0
+                )
+                > 0
+            ):
+                self.elapsed_rfid += self.timer.get_elapsed("rfid_elapsed")
+
             self.timer.update("tracking")
 
             self.label_timer_date.config(text=self.formatted_time(TIMER_DATETIME))
             self.label_timer_active.config(text=self.formatted_time(TIMER_ACTIVE))
             self.label_timer_start.config(text=self.formatted_time(TIMER_START))
             self.label_timer_tracking.config(text=self.formatted_time(TIMER_TRACKING))
+            self.label_timer_rfid.config(text=self.formatted_time(TIMER_RFID))
             self.label_tracking_rate.config(
                 text=f"VCR: {0.00 if not self.elapsed_tracking or not self.elapsed_start else (self.elapsed_tracking / self.elapsed_start * 100):.2f}%"
             )
