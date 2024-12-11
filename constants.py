@@ -19,6 +19,10 @@ class Position:
             return cls.LEFT if lr else Commands.ROTATE_LEFT
         if pos == Commands.ROTATE_LEFT:
             return cls.RIGHT if lr else Commands.ROTATE_RIGHT
+        if pos == Commands.GO_RIGHT:
+            return Commands.GO_LEFT
+        if pos == Commands.GO_LEFT:
+            return Commands.GO_RIGHT
         return pos
 
     @classmethod
@@ -91,10 +95,15 @@ class Commands:
 
     LIST_IGNORE_LOG: ClassVar[Set[str]] = {STOP_TEMP, CHECK, GET_DISTANCE}
     LIST_ROTATE: ClassVar[Set[str]] = {ROTATE_RIGHT, ROTATE_LEFT}
+    LIST_GO: ClassVar[Set[str]] = {GO_RIGHT, GO_LEFT}
 
     @classmethod
     def is_rotate(cls, cmd: str) -> bool:
         return cmd in cls.LIST_ROTATE
+
+    @classmethod
+    def is_go(cls, cmd: str) -> bool:
+        return cmd in cls.LIST_GO
 
     @classmethod
     def is_ignore(cls, cmd: str) -> bool:

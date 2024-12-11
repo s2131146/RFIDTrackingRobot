@@ -35,14 +35,12 @@ class RFIDReader:
         self.running = False
         self.thread = None
         self.timer = timer()
-        self.timer.register("rfid")
         self.lock = threading.Lock()
 
         self.detection_counts = {1: 0, 2: 0, 3: 0, 4: 0}  # REAR, LEFT, RIGHT, CENTER
         self.detection_counts_sec = {1: 0, 2: 0, 3: 0, 4: 0}
         self.predict_direction = Commands.GO_CENTER  # 初期方向設定
         self.last_direction = Commands.STOP_TEMP  # 前回の方向
-        self.prevent_transition = True  # 方向転換を一時的に防ぐフラグ
         self.last_move_direction = Commands.GO_LEFT
 
         self.signal_strength = 40  # 初期値を40に設定
@@ -65,7 +63,7 @@ class RFIDReader:
             self.no_reader = True
 
     def setup_command(self):
-        self.set_signal_strength(self.signal_strength)  # アンテナの電波強度設定
+        self.send_command("N1,26")  # アンテナの電波強度設定
         r1 = self.send_command("J000")  # Region設定
         r2 = self.send_command("N5,05")  # EU 865~868
 
@@ -182,7 +180,7 @@ class RFIDReader:
         right = counts.get(RFIDAntenna.RIGHT.value, 0)
         center = counts.get(RFIDAntenna.CENTER.value, 0)
 
-        if not (max(left, right, center) == 0 and rear > 1):
+        if rear < 5:
             rear = 0
 
         # 検出回数が2以上のアンテナをリストアップ
@@ -205,7 +203,7 @@ class RFIDReader:
         else:
             self.rear_detection_streak = 0
 
-        if self.rear_detection_streak >= 2:
+        if self.rear_detection_streak >= 3:
             return Position.convert_to_rotate(self.prev_lr)
 
         # 5. 3つ以上のアンテナで検出された場合
@@ -260,77 +258,93 @@ class RFIDReader:
         epc_command = "Q"  # EPC読み取りコマンド
         response = self.send_command(epc_command)
 
-        if RFID_CARD in response:
+        if (RFID_CARD in response) or (RFID_ACTIVE in response):
             with self.lock:
                 self.detection_counts[self.current_antenna] += 1
+
+    def confirm_direction(self):
+        if Position.invert(self.delayed_direction) == self.predict_direction:
+            self.predict_direction = self.delayed_direction
+
+    def start_timer(self, new_direction):
+        self.delayed_direction = new_direction
+        self.timer.register("direction_timer")
+
+    def process_direction(self):
+        counts_copy = self.detection_counts.copy()
+        self.detection_counts_sec = counts_copy
+        new_direction = self.antenna_to_direction(counts_copy)
+        left = counts_copy.get(RFIDAntenna.LEFT.value, 0)
+        right = counts_copy.get(RFIDAntenna.RIGHT.value, 0)
+        center = counts_copy.get(RFIDAntenna.CENTER.value, 0)
+
+        # 回転途中に更新が間に合わない場合に直進
+        if new_direction != Commands.GO_CENTER and new_direction != Commands.STOP_TEMP:
+            if (
+                self.predict_direction in [Commands.ROTATE_LEFT, Commands.GO_LEFT]
+                and center >= left
+                or self.predict_direction in [Commands.ROTATE_RIGHT, Commands.GO_RIGHT]
+                and center >= right
+            ):
+                new_direction = Commands.GO_CENTER
+
+        if (
+            Commands.is_go(self.last_direction)
+            and Position.invert(new_direction) == self.predict_direction
+        ):
+            self.start_timer(new_direction)
+        else:
+            self.timer.remove("direction_timer")
+            self.predict_direction = new_direction
+
+        if self.timer.passed("direction_timer", 1, remove=True):
+            self.confirm_direction()
 
     def monitor_rfid(self):
         """RFIDタグを監視し、検出回数に基づいて方向を予測します。"""
         try:
             while self.running:
                 # 1. CENTER、LEFT、RIGHTアンテナでEPC読み取り
-                for antenna_id in [1, 2, 3, 4]:
+                for antenna_id in [1, 2, 4]:
                     self.switch_antenna(antenna_id)
                     for _ in range(5):
                         self.read_epc()
 
-                with self.lock:
-                    counts_copy = self.detection_counts.copy()
-                    self.detection_counts_sec = counts_copy
-                    new_direction = self.antenna_to_direction(counts_copy)
-                    if (
-                        (
-                            new_direction == Commands.GO_LEFT
-                            and self.predict_direction == Commands.GO_RIGHT
-                        )
-                        or (
-                            new_direction == Commands.GO_RIGHT
-                            and self.predict_direction == Commands.GO_LEFT
-                        )
-                        or (
-                            new_direction == Commands.GO_CENTER
-                            and Commands.is_rotate(self.predict_direction)
-                        )
-                        or new_direction == Commands.STOP_TEMP
-                    ):
-                        if self.prevent_transition:
-                            self.predict_direction = new_direction
-                            self.prevent_transition = False
-                        else:
-                            self.prevent_transition = True
-                    else:
-                        self.prevent_transition = False
-                        self.predict_direction = new_direction
+                self.process_direction()
+                self.detection_counts_sec = self.detection_counts.copy()
 
-                    if (
-                        self.predict_direction == Commands.GO_LEFT
-                        or self.predict_direction == Commands.GO_RIGHT
-                    ):
-                        self.last_move_direction = self.predict_direction
-                    self.last_direction = new_direction
-                    if (
-                        new_direction == Commands.GO_LEFT
-                        or new_direction == Commands.GO_RIGHT
-                    ):
-                        self.prev_lr = new_direction
-                    for key in self.detection_counts:
-                        self.detection_counts[key] = 0
+                new_direction = self.predict_direction
+                if self.predict_direction != Commands.STOP_TEMP:
+                    self.last_move_direction = self.predict_direction
 
-                # 電波の強さを調整
-                if self.timer.passed("rfid", 1, update=True):
-                    self.adjust_signal_strength()
+                self.last_direction = new_direction
+                if (
+                    new_direction == Commands.GO_LEFT
+                    or new_direction == Commands.GO_RIGHT
+                ):
+                    self.prev_lr = new_direction
 
-                with self.lock:
-                    counts_str = ", ".join(
-                        [
-                            f"{ANTENNA_MAPS[ant]}={cnt}"
-                            for ant, cnt in counts_copy.items()
-                        ]
-                    )
+                for key in self.detection_counts:
+                    self.detection_counts[key] = 0
 
-                    logger.logger.debug(
-                        f"Direction: {self.predict_direction}, Counts: {counts_str}"
-                    )
+                if self.get_max_count() == 0:
+                    self.timer.register("no_rfid")
+                else:
+                    self.timer.remove("no_rfid")
+
+                if self.timer.passed("no_rfid", 2, remove=True):
+                    self.send_command("N1,26")
+
+                counts_str = ", ".join(
+                    [
+                        f"{ANTENNA_MAPS[ant]}={cnt}"
+                        for ant, cnt in self.get_detection_counts().items()
+                    ]
+                )
+
+                logger.logger.debug(
+                    f"Direction: {self.predict_direction}, Counts: {counts_str}"
+                )
 
         except Exception as e:
             logger.logger.error(f"Error in monitor_rfid: {e}")
@@ -356,6 +370,12 @@ class RFIDReader:
         """各アンテナの検出回数を取得します。"""
         with self.lock:
             return self.detection_counts_sec.copy()
+
+    def is_zero_detection(self):
+        return self.get_max_count() == 0
+
+    def get_max_count(self):
+        return max(self.get_detection_counts().values(), default=0)
 
     def get_rotate_direction(self):
         with self.lock:

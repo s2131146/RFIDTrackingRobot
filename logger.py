@@ -1,9 +1,9 @@
+from datetime import datetime
 import logging
 import os
 
-from timer import timer
 
-LOG_FILENAME = "tracker.log"
+LOG_FILENAME = f"records\RFIDTR_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 DEBUG_CONSOLE = False
 
 logger = logging.getLogger()

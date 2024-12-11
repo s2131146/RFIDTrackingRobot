@@ -103,6 +103,14 @@ class GUI:
     def stop_recording(self):
         if not self.converting:
             self.recording = False
+            logger.logger.info("===============[RECORD END]===============")
+            logger.logger.info(self.label_timer_start.cget("text"))
+            logger.logger.info(self.label_timer_tracking.cget("text"))
+            logger.logger.info(self.label_timer_rfid.cget("text"))
+            logger.logger.info(self.label_miss_count.cget("text"))
+            logger.logger.info(self.label_tracking_rate.cget("text"))
+            logger.logger.info(self.label_move_distance.cget("text"))
+            logger.logger.info("==========================================")
             if self.recording_thread is not None:
                 time.sleep(0.5)
                 threading.Thread(target=self.start_conversion, daemon=True).start()
@@ -623,8 +631,6 @@ class GUI:
             if enable_tracking:
                 self.elapsed_start += self.timer.get_elapsed("start")
 
-            self.timer.update("start")
-
             # TRACKING
             if enable_tracking and self.tracker.target_position not in (
                 Position.NONE,
@@ -633,16 +639,12 @@ class GUI:
                 self.elapsed_tracking += self.timer.get_elapsed("tracking")
 
             # TRACKING
-            if (
-                enable_tracking
-                and max(
-                    self.tracker.rfid_reader.get_detection_counts().values(), default=0
-                )
-                > 0
-            ):
+            if enable_tracking and self.tracker.rfid_reader.get_max_count() > 0:
                 self.elapsed_rfid += self.timer.get_elapsed("rfid_elapsed")
 
+            self.timer.update("start")
             self.timer.update("tracking")
+            self.timer.update("rfid_elapsed")
 
             self.label_timer_date.config(text=self.formatted_time(TIMER_DATETIME))
             self.label_timer_active.config(text=self.formatted_time(TIMER_ACTIVE))

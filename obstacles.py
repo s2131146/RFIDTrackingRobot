@@ -217,7 +217,6 @@ class Obstacles:
         # 中央領域に壁が存在するかをチェック
         central_area = wall_mask[:, self.central_start : self.central_end]
         wall_in_center = np.any(central_area)
-        self.wall_positions_history.append(wall_position)
 
         # 壁の深度を取得し、最も近い壁の深度を計算
         valid_wall_depths = depth_image[
@@ -250,15 +249,28 @@ class Obstacles:
         most_common_avoid_wall = self.last_wall_avoid
         most_common_wall_parallel = wall_parallel
 
+        conv = Position.convert_to_pos(target_lost_command)
+
         if (
             target_lost_command != Commands.STOP_TEMP
             and Position.convert_to_rotate(most_common_wall_position)
             != target_lost_command
             and not most_common_avoid_wall
             and most_common_wall_position != self.OBS_NONE
+            and (
+                (
+                    np.any(wall_mask[:, : self.left_center_start])
+                    and conv == Position.LEFT
+                )
+                or np.any(wall_mask[:, self.right_center_end :])
+                and conv == Position.RIGHT
+            )
         ):
             most_common_wall_parallel = False
-            most_common_wall_position = Position.convert_to_pos(target_lost_command)
+            most_common_wall_position = conv
+            wall_position = most_common_wall_position
+
+        self.wall_positions_history.append(wall_position)
 
         # INVERTになったら1秒間は継続
         if most_common_wall_parallel == self.OBS_PARALLEL_FIX_INVERT:

@@ -51,7 +51,7 @@ DEBUG_INVERT_MOTOR = False
 DEBUG_ENABLE_TRACKING = True
 DEBUG_SLOW_SPEED = 200
 
-RFID_ONLY_SPEED = 250
+RFID_ONLY_SPEED = 350
 
 # 壁回避時の決め打ちパラメータ
 DELAY_SPEED_FAST = 0.5
@@ -430,21 +430,12 @@ class Tracker:
         high_motor = base_power if not DEBUG_INVERT_MOTOR else low_power
         low_motor = low_power if not DEBUG_INVERT_MOTOR else base_power
         is_fix_pos = Obstacles.is_fix(self.wall_parallel)
-        wall_direction = (
-            Position.invert(wall_direction)
-            if self.wall_parallel == Obstacles.OBS_PARALLEL_FIX_INVERT
-            else wall_direction
-        )
+        invert = self.wall_parallel == Obstacles.OBS_PARALLEL_FIX_INVERT
+        wall_direction = Position.invert(wall_direction) if invert else wall_direction
 
         # 平行に戻す場合の出力
         if is_fix_pos:
             low_motor = int(base_power * 0.5)
-
-        # INVERT時、対象が前にいるときにも避けてね
-        if self.target_position != Position.NONE:
-            wall_direction = Position.invert(self.target_position, lr=True)
-            if wall_direction == Position.CENTER:
-                wall_direction = Position.invert(self.wall)
 
         # 壁を避ける。INVERT時は壁が反対にあることにする
         if wall_direction == Position.LEFT and (
@@ -612,9 +603,9 @@ class Tracker:
 
     def stop_if_no_targets_for_sec(self):
         # 一周しても見つからない場合は音を鳴らして停止
-        backoff = self.timer.has("bk_rotate")
+        short = self.timer.has("bk_rotate") or self.timer.has("rfid_rear")
         if self.stop_exec_cmd and self.timer.passed(
-            "find_target", 1 if backoff else 8, remove=True
+            "find_target", 2 if short else 8, remove=True
         ):
             self.stop_exec_cmd = False
             self.send(Commands.STOP_TEMP)
@@ -809,7 +800,15 @@ class Tracker:
                             logger.info(f"Detected rfid from diff dir: {dir}")
                             self.apply_rfid_direction()
                             self.target_processor.reset_target()
-                            self.start_motor()
+                            ge4 = [
+                                ant
+                                for ant, cnt in self.rfid_reader.get_detection_counts().items()
+                                if cnt >= 4
+                            ]
+
+                            if self.stop and self.auto_stop_obs and len(ge4) >= 2:
+                                self.start_motor()
+
                             self.exec_lost_target_command_for(1500)
 
                     self.first_find = False
@@ -818,7 +817,7 @@ class Tracker:
                     self.stop_temp = False
                     self.stop_exec_cmd = False
             else:
-                if self.RFID_ENABLED:
+                if self.RFID_ENABLED and not self.stop:
                     self.apply_rfid_direction()
                     self.start_motor()
                     self.exec_lost_target_command_for(1500)
@@ -912,8 +911,11 @@ class Tracker:
             and not self.stop_exec_cmd_gui
             and not self.stop
             and not self.in_track_out
-            and Position.convert_to_rotate(self._prev_send_rfid_command)
-            != self.lost_target_command
+            and (
+                self._prev_send_rfid_command == Commands.CHECK
+                or Position.convert_to_rotate(self._prev_send_rfid_command)
+                != self.lost_target_command
+            )
         ):
             self.timer.update("t_l_seen")
             if self.find_wall:
@@ -1072,6 +1074,7 @@ class Tracker:
             self.calculate_motor_power(self.target_x)
 
     _prev_send_rfid_command = Commands.CHECK
+    _prev_no_rfid_dir = Commands.GO_CENTER
 
     def _send_target_position_if_rfid_mode(self, force=False):
         """RFIDモードの場合、対象の方向を送信"""
@@ -1093,40 +1096,78 @@ class Tracker:
                 self.motor_power_l = max_power
                 self.motor_power_r = max_power
 
-            if (
-                self._prev_send_rfid_command == Commands.STOP_TEMP
-                and self.target_position == Commands.STOP_TEMP
-            ):
+            if self.rfid_reader.get_max_count() == 0:
                 self.timer.register("rfid_lost")
-                if self.timer.passed("rfid_lost", 3):
-                    logger.info("Lost RFID Signal for 3 secs.")
+                if self.timer.passed("rfid_lost", 4):
+                    logger.info("Lost RFID Signal for 4 secs.")
                     self.play_beep()
-                return
-            if self.target_position != Commands.STOP_TEMP:
-                if self.timer.has("rfid_lost"):
-                    self.timer.remove("rfid_lost")
-                    self.stop_beep()
+                    return
+            else:
+                self.timer.remove("rfid_lost")
+                self.stop_beep()
 
             self.stop_temp = False
-            self._prev_send_rfid_command = self.target_position
             if self.target_position == Commands.GO_LEFT:
+                self.timer.remove("nf_left")
                 self.motor_power_l = min_power
                 self.lost_target_command = Commands.ROTATE_LEFT
+                self._prev_no_rfid_dir = Commands.GO_LEFT
             elif self.target_position == Commands.GO_RIGHT:
+                self.timer.remove("nf_right")
                 self.motor_power_r = min_power
                 self.lost_target_command = Commands.ROTATE_RIGHT
+                self._prev_no_rfid_dir = Commands.GO_RIGHT
             elif self.target_position == Commands.STOP_TEMP:
-                self.send(Commands.STOP_TEMP)
+                if self.rfid_reader.is_zero_detection():
+                    pos = self.target_position
+                    if self._prev_no_rfid_dir == Commands.GO_CENTER:
+                        pos = Commands.GO_CENTER
+                        self.motor_power_l = max_power
+                        self.motor_power_r = max_power
+                    if self._prev_no_rfid_dir == Commands.GO_LEFT:
+                        if self.timer.passed("nf_left", 3.5):
+                            pos = Commands.GO_CENTER
+                            self.motor_power_l = max_power
+                            self.motor_power_r = max_power
+                        else:
+                            self.timer.register("nf_left")
+                            pos = Commands.GO_LEFT
+                            self.motor_power_l = min_power
+                            self.motor_power_r = max_power
+                    if self._prev_no_rfid_dir == Commands.GO_RIGHT:
+                        if self.timer.passed("nf_right", 3.5):
+                            pos = Commands.GO_CENTER
+                            self.motor_power_l = max_power
+                            self.motor_power_r = max_power
+                        else:
+                            self.timer.register("nf_right")
+                            pos = Commands.GO_RIGHT
+                            self.motor_power_l = max_power
+                            self.motor_power_r = min_power
+
+                    if (
+                        pos == Commands.GO_CENTER
+                        or self.timer.yet("nf_left", 3.5)
+                        or self.timer.yet("nf_right", 3.5)
+                    ):
+                        self.target_position = pos
+                        self._prev_no_rfid_dir = pos
+                else:
+                    self.send(Commands.STOP_TEMP)
             elif Commands.is_rotate(self.target_position):
                 self.stop_exec_cmd = True
                 self.timer.register("find_target")
+                self.timer.register("rfid_rear")
                 self.send(self.target_position)
                 self.lost_target_command = self.target_position
             elif self.target_position == Commands.GO_CENTER:
+                self._prev_no_rfid_dir = Commands.GO_CENTER
                 self.lost_target_command = Commands.STOP_TEMP
                 if self.wall != Position.NONE:
                     self.lost_target_command = Position.convert_to_rotate(self.wall)
                     self.lost_target_avoid_wall = self.wall
+
+            self._prev_send_rfid_command = self.target_position
 
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""
@@ -1135,9 +1176,9 @@ class Tracker:
         ):
             self.default_speed = DEBUG_SLOW_SPEED
         if self.mode == self.Mode.RFID_ONLY.name:
+            if self.rfid_reader.get_max_count() == 0:
+                self.default_speed = RFID_ONLY_SPEED - 50
             self.default_speed = RFID_ONLY_SPEED
-            if max(self.rfid_reader.get_detection_counts().values(), default=0) == 0:
-                self.default_speed = 150
         if self._def_spd_bk != self.default_speed:
             self.send((Commands.SET_DEFAULT_SPEED, self.default_speed))
             self._def_spd_bk = self.default_speed
