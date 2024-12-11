@@ -111,6 +111,9 @@ class GUI:
             if self.recording:
                 self.stop_recording()
 
+    prev_status = ""
+    skipped = False
+
     def record_screen(self):
         width = self.root.winfo_width()
         height = self.root.winfo_height()
@@ -148,6 +151,9 @@ class GUI:
             if sct_img is not None:
                 img = np.array(sct_img, dtype=np.uint8)
                 frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                self.prev_status = self.label_status.cget("text")
+                self.update_status("Failed to grab frame.")
+                self.skipped = True
                 last_frame = frame
             else:
                 frame = last_frame
@@ -155,6 +161,10 @@ class GUI:
             expected_frame_count = int(
                 self.timer.get_elapsed("record") / target_frame_interval
             )
+
+            if self.skipped:
+                self.skipped = False
+                self.update_status(self.prev_status)
 
             # 不足しているフレームを埋め込む
             while frame_count < expected_frame_count and self.recording:

@@ -49,6 +49,16 @@ class Position:
             return Commands.STOP_TEMP
         return pos
 
+    @classmethod
+    def convert_to_go(cls, pos):
+        if pos == cls.LEFT or Commands.ROTATE_LEFT:
+            return Commands.GO_LEFT
+        if pos == cls.RIGHT or pos == Commands.ROTATE_RIGHT:
+            return Commands.GO_RIGHT
+        if pos == cls.CENTER:
+            return Commands.STOP_TEMP
+        return pos
+
 
 @dataclass(frozen=True)
 class Commands:

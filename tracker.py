@@ -112,10 +112,10 @@ class Tracker:
         self.playing_beep = False
 
         # 自動停止の距離閾値（占有率）
-        self.AUTO_STOP_OCCUPANCY_RATIO = 0.4
+        self.AUTO_STOP_OCCUPANCY_RATIO = 0.5
 
         # 近接の閾値（占有率）
-        self.CLOSE_OCCUPANCY_RATIO = 0.3
+        self.CLOSE_OCCUPANCY_RATIO = 0.4
 
         # 自動停止状態を管理するフラグ
         self.auto_stop = False
@@ -354,6 +354,8 @@ class Tracker:
         if not self.gui.var_enable_serial.get():
             return False, -1
 
+        command = Commands.CHECK
+
         if isinstance(data, tuple):
             command, value = data
             data = f"{command}:{value}"
@@ -378,6 +380,14 @@ class Tracker:
             and data != Commands.GET_DISTANCE
             and data != Commands.RESET_DISTANCE
         ):
+            return True, -1
+
+        if (
+            command == Commands.L_SPEED
+            or command == Commands.R_SPEED
+            or command == Commands.L_SPEED_REV
+            or command == Commands.R_SPEED_REV
+        ) and self.stop:
             return True, -1
 
         ret, ser_id = self.serial.send_serial(data)
@@ -509,10 +519,22 @@ class Tracker:
         normalized_error = target_x / (0.85 * half_width)
         normalized_error = max(-1.0, min(1.0, normalized_error))
 
-        steer_strength = 70
-        steer_multiplier = 1.2
+        steer_strength = 100
+        steer_multiplier = 1.5
 
-        adjusted_error = normalized_error * steer_multiplier
+        # ステアリング調整: 占有率が低くても曲がりやすくし、100%出力になる距離を遠く設定
+        max_effective_ratio = 0.2  # 100%出力を適用する占有率
+        min_effective_ratio = 0.1  # ステアリングが最大になる占有率
+        if self.occupancy_ratio <= min_effective_ratio:
+            distance_factor = 1.0  # 占有率が低い場合は曲がりにくく
+        elif self.occupancy_ratio >= max_effective_ratio:
+            distance_factor = 0.5  # 100%出力になる占有率
+        else:
+            # 線形補間で占有率に応じてdistance_factorを計算
+            slope = (0.5 - 1.0) / (max_effective_ratio - min_effective_ratio)
+            distance_factor = 1.0 + slope * (self.occupancy_ratio - min_effective_ratio)
+
+        adjusted_error = normalized_error * steer_multiplier / distance_factor
         adjusted_error = max(-1.0, min(1.0, adjusted_error))
 
         if adjusted_error < 0:
@@ -601,7 +623,10 @@ class Tracker:
         if self.serial.has_received(self.move_distance_id_list):
             received = self.serial.get_receive(self.move_distance_id_list)
             if received:
-                self.move_distance = float(received)
+                try:
+                    self.move_distance = float(received)
+                except Exception:
+                    pass
 
     def stop_if_no_targets_for_sec(self):
         # 一周しても見つからない場合は音を鳴らして停止
@@ -790,10 +815,20 @@ class Tracker:
                         != self.lost_target_command
                         and rf_dir != Commands.STOP_TEMP
                         and rf_dir != Commands.GO_CENTER
+                        and isinstance(self.rfid_reader.get_detection_counts(), Tuple)
                     ):
-                        logger.info(f"Detected rfid from diff dir: {dir}")
-                        self.apply_rfid_direction()
-                        self.target_processor.reset_target()
+                        antennas_with_ge3 = [
+                            ant
+                            for ant, cnt in self.rfid_reader.get_detection_counts()
+                            if cnt >= 3
+                        ]
+                        total_ge3 = len(antennas_with_ge3)
+                        if total_ge3 >= 2:
+                            logger.info(f"Detected rfid from diff dir: {dir}")
+                            self.apply_rfid_direction()
+                            self.target_processor.reset_target()
+                            self.start_motor()
+                            self.exec_lost_target_command_for(1500)
 
                     self.first_find = False
                     self.tracking_target_invisible = False
@@ -803,6 +838,8 @@ class Tracker:
             else:
                 if self.RFID_ENABLED:
                     self.apply_rfid_direction()
+                    self.start_motor()
+                    self.exec_lost_target_command_for(1500)
 
                 self._handle_no_targets()
         elif not Commands.is_rotate(self.rfid_reader.get_direction()):
@@ -848,14 +885,27 @@ class Tracker:
             x = in_max
         return out_max + (out_min - out_max) * (x - in_min) / (in_max - in_min)
 
+    def exec_lost_target_command_for(self, milli):
+        def func():
+            self.stop_exec_cmd = False
+
+        logger.info("Rotating for find target by RFID...")
+        self.root.after(milli, func)
+        self.send(self.lost_target_command)
+        self.tracking_target_invisible = False
+        self.stop_exec_cmd = True
+        self.motor_power_l = 0
+        self.motor_power_r = 0
+
     def exec_lost_target_command(self):
         """対象を見失った際のコマンドを実行"""
-        command = Position.convert_to_turn(self.lost_target_command)
+        command = self.lost_target_command
+        if not self.find_target_rotate:
+            command = Position.convert_to_go(command)
         self.send(
             command if self.tracking_target_invisible else self.lost_target_command
         )
         self.timer.register("find_target")
-        self.lost_target_command = Commands.STOP_TEMP
         self.tracking_target_invisible = False
         self.stop_exec_cmd = True
         self.motor_power_l = 0
@@ -926,7 +976,9 @@ class Tracker:
         self.last_wall_avoid = Position.NONE
         self.timer.remove("t_detection")
 
-        if self.timer.passed("t_l_seen", 0.5, remove=True) and not self.stop_temp:
+        if (
+            self.timer.passed("t_l_seen", 0.5, remove=True) and not self.stop_temp
+        ) or self.find_target_rotate:
             logger.info("Executing lost command")
             self.lost_target_avoid_wall = Position.NONE
             self.find_target_rotate = False
@@ -1090,6 +1142,9 @@ class Tracker:
                 self.lost_target_command = self.target_position
             elif self.target_position == Commands.GO_CENTER:
                 self.lost_target_command = Commands.STOP_TEMP
+                if self.wall != Position.NONE:
+                    self.lost_target_command = Position.convert_to_rotate(self.wall)
+                    self.lost_target_avoid_wall = self.wall
 
     def _send_default_speed_if_changed(self):
         """デフォルト速度に変更がある場合に送信"""

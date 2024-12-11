@@ -32,7 +32,7 @@ class TargetProcessor:
     """対象検出クラス: 人物の検出と距離に基づく速度調整を行う"""
 
     model: YOLO
-    detected_targets: List[Target]
+    detected_targets: List[Target] = []
 
     def __init__(
         self,
@@ -67,38 +67,74 @@ class TargetProcessor:
         self.prev_command = Commands.STOP_TEMP
         self.last_target_features = None
         self.current_target = None
-        self.color_tolerance = 35
+        self.color_tolerance = 15
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
         self.last_bbox = None
+        self.detected_target_list = []  # 映っている全てのターゲットのリスト
+        self.target_index = -1  # 現在選択中のターゲットのインデックス
+
+    def select_target(self, detected_targets: List[Target]):
+        """検出されたターゲットから選択"""
+        self.detected_targets = detected_targets
+        self.update_detected_target_list()
+
+        # 現在のターゲットがリストに含まれていなければリセット
+        if self.current_target not in self.detected_target_list:
+            self.reset_target()
+
+        return self.current_target
+
+    def update_detected_target_list(self):
+        """現在のフレームのターゲットをリストに反映"""
+        # 現在のフレームで検出されたターゲットをキーにした辞書
+        current_detected_colors = {
+            tuple(target.clothing_color_rgb): target for target in self.detected_targets
+        }
+
+        # リストから現在映っていないターゲットを削除
+        self.detected_target_list: List[Target] = [
+            target
+            for target in self.detected_target_list
+            if tuple(target.clothing_color_rgb) in current_detected_colors
+        ]
+
+        # 新しく検出されたターゲットをリストに追加
+        for color, target in current_detected_colors.items():
+            if all(
+                self.color_distance(color, t.clothing_color_rgb) > self.color_tolerance
+                for t in self.detected_target_list
+            ):
+                self.detected_target_list.append(target)
+
+        # 現在のターゲットがリストにいない場合、リストの最初を選択
+        if (
+            self.current_target not in self.detected_target_list
+            and self.detected_target_list
+        ):
+            self.target_index = 0
+            self.current_target = self.detected_target_list[self.target_index]
+            self.target_clothing_color = self.current_target.clothing_color_rgb
 
     def reset_target(self):
         """保持している色と異なる、最もカメラに近いターゲットを新たな対象に選び、保持色をリセットします。"""
-        if self.target_clothing_color is not None:
-            # 保持している色と異なるターゲットをフィルタリング
-            different_color_targets = [
-                t
-                for t in self.detected_targets
-                if self.color_distance(t.clothing_color_rgb, self.target_clothing_color)
-                > self.color_tolerance
-            ]
+        self.update_detected_target_list()  # リストを最新の状態に更新
 
-            # フィルタリング結果が存在する場合、最もカメラに近い（面積が最大の）ターゲットを選択
-            if different_color_targets:
-                new_target = self.select_closest_target(different_color_targets)
-                self.current_target = new_target
-                self.target_clothing_color = new_target.clothing_color_rgb
-            else:
-                # 異なる色のターゲットがいない場合、現在のターゲットをリセット
-                self.current_target = None
-                self.target_clothing_color = None
-        else:
-            # 色が保持されていない場合、何もしない
+        if not self.detected_target_list:
             self.current_target = None
             self.target_clothing_color = None
+            self.tracker.gui.update_status("No targets to reset to.")
+            return
 
-        self.tracker.gui.update_status("Reset Target.")
+        # インデックスを更新して次のターゲットを選択
+        self.target_index = (self.target_index + 1) % len(self.detected_target_list)
+        self.current_target = self.detected_target_list[self.target_index]
+        self.target_clothing_color = self.current_target.clothing_color_rgb
+
+        self.tracker.gui.update_status(
+            f"Target reset to {self.target_index + 1} / {len(self.detected_target_list)}."
+        )
 
     def update_speed_based_on_distance(self):
         """対象の占有率に基づいてself.default_speedを滑らかに更新"""
@@ -367,7 +403,7 @@ class TargetProcessor:
                     self.tracker.auto_stop = True
                     self.tracker.stop_motor()
             else:
-                if self.tracker.auto_stop:
+                if self.tracker.auto_stop and not self.tracker.stop_exec_cmd_gui:
                     self.tracker.auto_stop = False
                     self.tracker.start_motor()
 
