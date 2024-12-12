@@ -1281,6 +1281,7 @@ class GUI:
         self.tracker.lost_target_command = Commands.STOP_TEMP
         self.tracker.lost_target_avoid_wall = Position.NONE
         self.tracker.tracking_target_invisible = False
+        self.tracker._prev_no_rfid_dir = Commands.STOP_TEMP
         if self.tracker.stop:
             self.tracker.start_motor()
         else:

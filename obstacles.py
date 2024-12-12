@@ -113,6 +113,8 @@ class Obstacles:
         self.last_wall_avoid = False
         self.wall_parallel_history = []
 
+        self.wall_mask = None
+
         # 最後に検出された壁並行状態
         self.last_wall_parallel = False
 
@@ -202,6 +204,7 @@ class Obstacles:
 
         # 壁を検出
         wall_mask = self.detect_walls(depth_image, floor_mask)
+        self.wall_mask = wall_mask
         wall_position = self.determine_wall_position(
             depth_image, wall_mask, target_lost_command, targets
         )
@@ -258,11 +261,8 @@ class Obstacles:
             and not most_common_avoid_wall
             and most_common_wall_position != self.OBS_NONE
             and (
-                (
-                    np.any(wall_mask[:, : self.left_center_start])
-                    and conv == Position.LEFT
-                )
-                or np.any(wall_mask[:, self.right_center_end :])
+                (self.any_left() and conv == Position.LEFT)
+                or self.any_right()
                 and conv == Position.RIGHT
             )
         ):
@@ -355,6 +355,18 @@ class Obstacles:
             farthest_wall_depth,
             coverge,
         )
+
+    def any_left(self):
+        if self.wall_mask is not None:
+            return np.any(self.wall_mask[:, : self.left_center_start])
+        else:
+            return False
+
+    def any_right(self):
+        if self.wall_mask is not None:
+            return np.any(self.wall_mask[:, self.right_center_end :])
+        else:
+            return False
 
     def determine_obstacle_position_full(
         self, wall_mask: np.ndarray, close_depth: float

@@ -253,7 +253,7 @@ class TargetProcessor:
             selected_target = self.select_target_by_color(
                 detected_targets,
                 self.target_clothing_color,
-                60 if no_target else self.color_tolerance,
+                30 if no_target else self.color_tolerance,
             )
 
         # 光や映っている範囲で色が変わるため、逐一更新

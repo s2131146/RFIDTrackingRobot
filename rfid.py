@@ -6,6 +6,7 @@ import re
 import logger
 from constants import Commands, Position
 from timer import timer
+from obstacles import Obstacles
 
 
 class RFIDAntenna(Enum):
@@ -27,7 +28,7 @@ SHOW_DEBUG = False
 
 class RFIDReader:
 
-    def __init__(self, port="COM4", baudrate=38400, antenna=1):
+    def __init__(self, obs=None, port="COM4", baudrate=38400, antenna=1):
         self.port = port
         self.baudrate = baudrate
         self.current_antenna = antenna
@@ -36,6 +37,7 @@ class RFIDReader:
         self.thread = None
         self.timer = timer()
         self.lock = threading.Lock()
+        self.obs: Obstacles = obs
 
         self.detection_counts = {1: 0, 2: 0, 3: 0, 4: 0}  # REAR, LEFT, RIGHT, CENTER
         self.detection_counts_sec = {1: 0, 2: 0, 3: 0, 4: 0}
@@ -180,18 +182,26 @@ class RFIDReader:
         right = counts.get(RFIDAntenna.RIGHT.value, 0)
         center = counts.get(RFIDAntenna.CENTER.value, 0)
 
-        if rear < 5:
+        non_zero_counts = [cnt for cnt in counts.values() if cnt > 0]
+        only_one = len(non_zero_counts) == 1
+
+        if self.obs.any_left() and not only_one:
+            left = max(left - 3, 0)
+        if self.obs.any_right() and not only_one:
+            right = max(right - 3, 0)
+
+        if not (rear >= 3 and center < 1 and left < 2 and right < 2):
             rear = 0
 
-        # 検出回数が2以上のアンテナをリストアップ
-        antennas_with_ge1 = [ant for ant, cnt in counts.items() if cnt >= 2]
-        total_ge1 = len(antennas_with_ge1)
+        self.detection_counts_sec = {1: center, 2: right, 3: rear, 4: left}
+        counts = self.detection_counts_sec.copy()
 
         antennas_with_ge3 = [ant for ant, cnt in counts.items() if cnt >= 3]
         total_ge3 = len(antennas_with_ge3)
 
         # 3回以上のアンテナが3つ以上で停止
         if total_ge3 >= 3:
+            logger.logger.info("RFID Dir: Total ge 3")
             return Commands.STOP_TEMP
 
         # 各アンテナの最大検出回数とそれを持つアンテナ
@@ -203,37 +213,45 @@ class RFIDReader:
         else:
             self.rear_detection_streak = 0
 
-        if self.rear_detection_streak >= 3:
+        if self.rear_detection_streak >= 2:
+            logger.logger.info("RFID Dir: REAR rotate")
             return Position.convert_to_rotate(self.prev_lr)
-
-        # 5. 3つ以上のアンテナで検出された場合
-        if total_ge1 >= 3:
-            return self.last_direction
+        else:
+            rear = 0
 
         # 1. すべてのアンテナが0の場合
         if rear == 0 and left == 0 and right == 0 and center == 0:
+            logger.logger.info("RFID Dir: All zero")
             return Commands.STOP_TEMP
 
         # 2. 一つのアンテナのみが検出され、他が0の場合
-        non_zero_counts = [cnt for cnt in counts.values() if cnt > 0]
-        if len(non_zero_counts) == 1:
+        if only_one:
             antenna = next(ant for ant, cnt in counts.items() if cnt > 0)
             direction = ANTENNA_MAPS[antenna]
-            return self.direction_to_command(direction)
+            logger.logger.info("RFID Dir: Only one antenna detected")
+            dir = self.direction_to_command(direction)
+            if max_count >= 4:
+                dir = Position.convert_to_rotate(dir)
+            return dir
 
         # 3. CENTER、REARとLEFT、RIGHTの検出回数が同じ場合
         if center == rear and left == right and center > 0 and left > 0:
+            logger.logger.info("RFID Dir: Same diagonal")
             return self.last_direction
 
         # 斜めの場合
-        if center > 0 and (left > 1 or right > 1):
+        if center > 0 and (left >= 1 or right >= 1):
+            logger.logger.info("RFID Dir: Diagonal")
             if left > right:
                 return Commands.GO_LEFT
-            else:
+            elif right > left:
                 return Commands.GO_RIGHT
+            else:
+                return Commands.GO_CENTER
 
         # 7. 最も検出回数が多い方向へ移動。ただし、各方向が3回以上の場合は前へ
         if max_count > 0:
+            logger.logger.info("RFID Dir: Max detected")
             antenna = antennas_with_max[0]
             direction = ANTENNA_MAPS[antenna]
             dir = self.direction_to_command(direction)
@@ -241,6 +259,7 @@ class RFIDReader:
                 dir = Position.convert_to_rotate(dir)
             return dir
 
+        logger.logger.info("RFID Dir: No match")
         return Commands.STOP_TEMP
 
     def direction_to_command(self, direction):
@@ -272,8 +291,8 @@ class RFIDReader:
 
     def process_direction(self):
         counts_copy = self.detection_counts.copy()
-        self.detection_counts_sec = counts_copy
         new_direction = self.antenna_to_direction(counts_copy)
+        counts_copy = self.detection_counts_sec
         left = counts_copy.get(RFIDAntenna.LEFT.value, 0)
         right = counts_copy.get(RFIDAntenna.RIGHT.value, 0)
         center = counts_copy.get(RFIDAntenna.CENTER.value, 0)
@@ -305,13 +324,13 @@ class RFIDReader:
         try:
             while self.running:
                 # 1. CENTER、LEFT、RIGHTアンテナでEPC読み取り
-                for antenna_id in [1, 2, 4]:
+                for antenna_id in [1, 2, 3, 4]:
                     self.switch_antenna(antenna_id)
                     for _ in range(5):
                         self.read_epc()
 
-                self.process_direction()
-                self.detection_counts_sec = self.detection_counts.copy()
+                with self.lock:
+                    self.process_direction()
 
                 new_direction = self.predict_direction
                 if self.predict_direction != Commands.STOP_TEMP:
