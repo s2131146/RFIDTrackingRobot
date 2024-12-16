@@ -13,5 +13,6 @@ tracker.mp4
 .VSCodeCounter/
 .vscode/c_cpp_properties.json
 records/
+records_bk/
 ffmpeg/ffmpeg.exe
 .vscode/c_cpp_properties.json

@@ -43,7 +43,7 @@ FRAME_HEIGHT = 480
 
 WEB_CAM_NO = 0
 
-DEBUG_SLOW_MOTOR = True
+DEBUG_SLOW_MOTOR = False
 DEBUG_SERIAL = True
 DEBUG_USE_ONLY_WEBCAM = False
 DEBUG_DETECT_OBSTACLES = True
@@ -54,8 +54,8 @@ DEBUG_SLOW_SPEED = 200
 RFID_ONLY_SPEED = 350
 
 # 壁回避時の決め打ちパラメータ
-DELAY_SPEED_FAST = 0.5
-DELAY_SPEED_SLOW = 2.5
+DELAY_SPEED_FAST = 2.5
+DELAY_SPEED_SLOW = 4.5
 
 BEEP_SOUND_PATH = "sound/beep.mp3"
 
@@ -426,7 +426,7 @@ class Tracker:
             self.motor_power_r = 100
 
         base_power = max(self._calculate_base_speed(), 40)
-        low_power = 40 if not self.too_close_wall else 0
+        low_power = 0 if not self.too_close_wall else 0
         high_motor = base_power if not DEBUG_INVERT_MOTOR else low_power
         low_motor = low_power if not DEBUG_INVERT_MOTOR else base_power
         is_fix_pos = Obstacles.is_fix(self.wall_parallel)
@@ -435,7 +435,7 @@ class Tracker:
 
         # 平行に戻す場合の出力
         if is_fix_pos:
-            low_motor = int(base_power * 0.5)
+            low_motor = 0
 
         # 壁を避ける。INVERT時は壁が反対にあることにする
         if wall_direction == Position.LEFT and (
@@ -607,6 +607,7 @@ class Tracker:
         if self.stop_exec_cmd and self.timer.passed(
             "find_target", 2 if short else 8, remove=True
         ):
+            self.timer.remove("rfid_rear")
             logger.info("No target for sec")
             self.stop_exec_cmd = False
             self.send(Commands.STOP_TEMP)
@@ -618,11 +619,17 @@ class Tracker:
             and self.gui.var_enable_beep.get()
             and not self.first_find
         ):
+            self.tracking_target_invisible = False
+            self.stop_exec_cmd = False
+            self.missed_target_count += 1
             logger.info("Playing BEEP")
             self.playing_beep = True
             pygame.mixer.music.play(loops=-1)
 
     def stop_beep(self):
+        if self.timer.passed("no_rfid", 5):
+            return
+
         self.timer.remove("find_target")
         if self.playing_beep:
             logger.info("Stop BEEP")
@@ -685,6 +692,7 @@ class Tracker:
                 "l_w_avoid", self.map_value_to_scale(self.default_speed)
             ):
                 self.tracking_target_invisible = False
+                self.in_track_out = False
 
             self.update_motor_power()
             self.update_rfid_power()
@@ -776,6 +784,8 @@ class Tracker:
 
         return detected_targets
 
+    no_center = False
+
     def _detect_and_select_targets(self):
         """対象を検出して選択する内部処理"""
         detected_targets = self.target_processor.detect_targets(
@@ -804,37 +814,32 @@ class Tracker:
                     ) and not self.missed_target:
                         logger.info("Person detected but Target not detected.")
                         self.missed_target = True
-                        self.missed_target_count += 1
                     self._handle_no_targets()
                 else:
                     if (
                         self.RFID_ENABLED
-                        and Position.convert_to_rotate(rf_dir)
-                        != self.lost_target_command
                         and rf_dir != Commands.STOP_TEMP
                         and rf_dir != Commands.GO_CENTER
-                        and isinstance(self.rfid_reader.get_detection_counts(), Tuple)
+                        and self.rfid_reader.get_count(RFIDAntenna.CENTER) == 0
                     ):
-                        antennas_with_ge3 = [
-                            ant
-                            for ant, cnt in self.rfid_reader.get_detection_counts()
-                            if cnt >= 3
-                        ]
-                        total_ge3 = len(antennas_with_ge3)
-                        if total_ge3 >= 2:
+                        if not self.find_wall or self.timer.passed("find_wall", 5):
                             logger.info(f"Detected rfid from diff dir: {dir}")
                             self.apply_rfid_direction()
                             self.target_processor.reset_target()
-                            ge4 = [
-                                ant
-                                for ant, cnt in self.rfid_reader.get_detection_counts().items()
-                                if cnt >= 4
-                            ]
 
-                            if self.stop and self.auto_stop_obs and len(ge4) >= 2:
+                            if self.stop and self.auto_stop_obs:
                                 self.start_motor()
 
-                            self.exec_lost_target_command_for(1500)
+                            if Commands.is_rotate(rf_dir):
+                                self.exec_lost_target_command_for(3000)
+                            else:
+                                self.exec_lost_target_command_for(1500)
+                    elif self.RFID_ENABLED and self.timer.passed("no_rfid", 5):
+                        logger.info(
+                            "Target detected but RFID not detected in DualMode."
+                        )
+                        self.send(Commands.STOP_TEMP)
+                        self.play_beep()
 
                     self.first_find = False
                     self.tracking_target_invisible = False
@@ -848,9 +853,11 @@ class Tracker:
                     self.RFID_ENABLED
                     and not self.stop
                     and not self.tracking_target_invisible
+                    and (not self.find_wall or self.timer.passed("find_wall", 5))
                 ):
                     self.apply_rfid_direction()
                     self.exec_lost_target_command_for(1500)
+
         elif self.rfid_reader.get_max_count() == 0:
             self._handle_no_targets()
 
@@ -905,6 +912,9 @@ class Tracker:
         return out_max + (out_min - out_max) * (x - in_min) / (in_max - in_min)
 
     def exec_lost_target_command_for(self, milli):
+        if self.stop_exec_cmd or (self.stop and not self.auto_stop_obs):
+            return
+
         def func():
             self.stop_exec_cmd = False
 
@@ -958,12 +968,14 @@ class Tracker:
             self.timer.update("t_l_seen")
             if self.find_wall:
                 return
+            self.timer.register("find_wall")
             self.find_wall = True
             self.stop_exec_cmd = True
             self.send(Position.convert_to_turn(self.lost_target_command))
             return
         else:
             if self.find_wall:
+                self.timer.remove("find_wall")
                 self.find_wall = False
                 self.stop_exec_cmd = False
                 self.send(
@@ -1185,10 +1197,10 @@ class Tracker:
                 else:
                     self.send(Commands.STOP_TEMP)
             elif Commands.is_rotate(self.target_position):
-                self.stop_exec_cmd = True
+                logger.info("Rotating RFID Direction")
                 self.timer.register("find_target")
                 self.timer.register("rfid_rear")
-                self.send(self.target_position)
+                self.exec_lost_target_command_for(1500)
                 self.lost_target_command = self.target_position
             elif self.target_position == Commands.GO_CENTER:
                 self._prev_no_rfid_dir = Commands.GO_CENTER
@@ -1234,9 +1246,13 @@ class Tracker:
         ):
 
             def func():
-                logger.info("Backing off to avoid obstacle...")
-                self.timer.register(key)
-                self.send(Commands.GO_BACK)
+                if self.obs_coverge > 0.5:
+                    logger.info("Backing off to avoid obstacle...")
+                    self.timer.register(key)
+                    self.send(Commands.GO_BACK)
+                else:
+                    self.timer.register("bk_rotate")
+                    self.stop_exec_cmd_backoff = False
 
             logger.info("Obstacle detected. Stopping for sec.")
             self.stop_exec_cmd_backoff = True

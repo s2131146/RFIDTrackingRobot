@@ -67,7 +67,7 @@ class TargetProcessor:
         self.prev_command = Commands.STOP_TEMP
         self.last_target_features = None
         self.current_target = None
-        self.color_tolerance = 10
+        self.color_tolerance = 30
         self.last_target_center_x = None
         self.last_target_center_y = None
         self.target_clothing_color = None
@@ -78,7 +78,7 @@ class TargetProcessor:
     def select_target(self, detected_targets: List[Target]):
         """検出されたターゲットから選択"""
         self.detected_targets = detected_targets
-        self.update_detected_target_list()
+        # self.update_detected_target_list()
 
         # 現在のターゲットがリストに含まれていなければリセット
         if self.current_target not in self.detected_target_list:
@@ -143,7 +143,7 @@ class TargetProcessor:
             self.tracker.CLOSE_OCCUPANCY_RATIO,
             self.tracker.AUTO_STOP_OCCUPANCY_RATIO,
         ]
-        speeds = [500, 250, 150]
+        speeds = [350, 250, 150]
 
         occupancy = self.tracker.occupancy_ratio
 
@@ -253,7 +253,7 @@ class TargetProcessor:
             selected_target = self.select_target_by_color(
                 detected_targets,
                 self.target_clothing_color,
-                30 if no_target else self.color_tolerance,
+                self.color_tolerance,
             )
 
         # 光や映っている範囲で色が変わるため、逐一更新

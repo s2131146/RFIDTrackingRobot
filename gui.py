@@ -1069,6 +1069,7 @@ class GUI:
             self.moving[direction] = True
             self.tracker.start_motor()
             self.tracker.stop_exec_cmd_gui = True
+            self.tracker.stop_exec_cmd = True
             self.move(direction)
 
     def stop_moving(self, direction):
@@ -1078,6 +1079,7 @@ class GUI:
         if not self.moving[direction]:
             self.tracker.default_speed = self.default_speed_bk
             self.tracker.stop_exec_cmd_gui = False
+            self.tracker.stop_exec_cmd = False
             self.tracker.send(Commands.STOP)
             return
 
@@ -1282,6 +1284,7 @@ class GUI:
         self.tracker.lost_target_avoid_wall = Position.NONE
         self.tracker.tracking_target_invisible = False
         self.tracker._prev_no_rfid_dir = Commands.STOP_TEMP
+        self.tracker.stop_exec_cmd = False
         if self.tracker.stop:
             self.tracker.start_motor()
         else:

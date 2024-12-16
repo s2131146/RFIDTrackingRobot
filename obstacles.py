@@ -115,6 +115,8 @@ class Obstacles:
 
         self.wall_mask = None
 
+        self.obs_coverge = 0
+
         # 最後に検出された壁並行状態
         self.last_wall_parallel = False
 
@@ -326,6 +328,8 @@ class Obstacles:
         # 最も遠い深度が500を切ったら、壁の終わりとして壁から離れる
         if farthest_wall_depth < 500:
             most_common_avoid_wall = True
+
+        self.obs_coverge = coverge
 
         # 対象が中央にいる場合、障害物なしと判断して終了
         if center_target:
