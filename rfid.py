@@ -237,7 +237,7 @@ class RFIDReader:
             logger.logger.info("RFID Dir: Only one antenna detected")
             dir = self.direction_to_command(direction)
             if max_count >= 4:
-                dir = Position.convert_to_rotate(dir)
+                dir = Position.convert_to_rotate(dir, False)
             return dir
 
         if center > 1:
@@ -312,18 +312,27 @@ class RFIDReader:
 
         logger.logger.info(f"RFID Direction: {new_direction}")
 
-        if self.predict_direction == Commands.GO_CENTER and Commands.is_go(
-            new_direction
-        ):
-            if not self.center_backup:
-                self.center_backup = True
-                return
-            else:
-                self.center_backup = False
-
         if (
-            Commands.is_go(self.last_direction)
-            and Position.invert(new_direction) == self.predict_direction
+            self.last_direction != Commands.STOP_TEMP
+            and self.last_direction != Commands.GO_CENTER
+            and (
+                (
+                    (
+                        self.last_direction == Commands.GO_LEFT
+                        or self.last_direction == Commands.ROTATE_LEFT
+                    )
+                    and new_direction == Commands.GO_RIGHT
+                    or new_direction == Commands.ROTATE_RIGHT
+                )
+                or (
+                    (
+                        self.last_direction == Commands.GO_RIGHT
+                        or self.last_direction == Commands.ROTATE_RIGHT
+                    )
+                    and new_direction == Commands.GO_LEFT
+                    or new_direction == Commands.ROTATE_LEFT
+                )
+            )
         ) or (self.last_direction == Commands.GO_CENTER and rear != 0):
             self.start_timer(new_direction)
         else:

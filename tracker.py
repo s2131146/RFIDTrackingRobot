@@ -801,9 +801,9 @@ class Tracker:
                 selected_target = self._select_and_process_multiple_targets(
                     detected_targets
                 )
+                if rf_dir == Commands.GO_CENTER:
+                    self.target_processor.reset_target()
                 if selected_target is None:
-                    if rf_dir == Commands.GO_CENTER:
-                        self.target_processor.reset_target()
                     if (
                         not self.stop_exec_cmd
                         and (
@@ -821,25 +821,27 @@ class Tracker:
                         and rf_dir != Commands.STOP_TEMP
                         and rf_dir != Commands.GO_CENTER
                         and self.rfid_reader.get_count(RFIDAntenna.CENTER) == 0
+                        and self.rfid_reader.get_max_count() >= 3
                     ):
-                        if not self.find_wall or self.timer.passed("find_wall", 5):
-                            logger.info(f"Detected rfid from diff dir: {dir}")
-                            self.apply_rfid_direction()
-                            self.target_processor.reset_target()
+                        self.timer.register("another_dir")
+                        if self.timer.passed("another_dir", 1, remove=True):
+                            if not self.find_wall or self.timer.passed("find_wall", 5):
+                                logger.info(f"Detected rfid from diff dir: {dir}")
+                                self.apply_rfid_direction()
+                                self.target_processor.reset_target()
 
-                            if self.stop and self.auto_stop_obs:
-                                self.start_motor()
+                                if self.stop and self.auto_stop_obs:
+                                    self.start_motor()
 
-                            if Commands.is_rotate(rf_dir):
                                 self.exec_lost_target_command_for(3000)
-                            else:
-                                self.exec_lost_target_command_for(1500)
                     elif self.RFID_ENABLED and self.timer.passed("no_rfid", 5):
                         logger.info(
                             "Target detected but RFID not detected in DualMode."
                         )
                         self.send(Commands.STOP_TEMP)
                         self.play_beep()
+                    else:
+                        self.timer.remove("another_dir")
 
                     self.first_find = False
                     self.tracking_target_invisible = False
@@ -1161,39 +1163,24 @@ class Tracker:
                 if self.rfid_reader.is_zero_detection():
                     pos = self.target_position
                     if self._prev_no_rfid_dir == Commands.GO_CENTER:
-                        if not self.timer.passed("nf_center", 3.5):
-                            self.timer.register("nf_center")
-                            pos = Commands.GO_CENTER
-                            self.motor_power_l = max_power
-                            self.motor_power_r = max_power
+                        pos = Commands.GO_CENTER
+                        self.motor_power_l = max_power
+                        self.motor_power_r = max_power
                     if self._prev_no_rfid_dir == Commands.GO_LEFT:
-                        if self.timer.passed("nf_left", 3.5):
-                            pos = Commands.GO_CENTER
-                            self.motor_power_l = max_power
-                            self.motor_power_r = max_power
-                        else:
-                            self.timer.register("nf_left")
-                            pos = Commands.GO_LEFT
-                            self.motor_power_l = min_power
-                            self.motor_power_r = max_power
+                        pos = Commands.GO_LEFT
+                        self.motor_power_l = min_power
+                        self.motor_power_r = max_power
                     if self._prev_no_rfid_dir == Commands.GO_RIGHT:
-                        if self.timer.passed("nf_right", 3.5):
-                            pos = Commands.GO_CENTER
-                            self.motor_power_l = max_power
-                            self.motor_power_r = max_power
-                        else:
-                            self.timer.register("nf_right")
-                            pos = Commands.GO_RIGHT
-                            self.motor_power_l = max_power
-                            self.motor_power_r = min_power
+                        pos = Commands.GO_RIGHT
+                        self.motor_power_l = max_power
+                        self.motor_power_r = min_power
 
-                    if (
-                        pos == Commands.GO_CENTER
-                        or self.timer.yet("nf_left", 3.5)
-                        or self.timer.yet("nf_right", 3.5)
-                    ):
+                    if self.timer.yet("no_rfid", 5):
                         self.target_position = pos
                         self._prev_no_rfid_dir = pos
+                    else:
+                        self.motor_power_l = 0
+                        self.motor_power_r = 0
                 else:
                     self.send(Commands.STOP_TEMP)
             elif Commands.is_rotate(self.target_position):

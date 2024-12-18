@@ -938,8 +938,8 @@ class Obstacles:
         red_overlay[wall_mask] = [255, 0, 0]
 
         # 各オーバーレイをdepth_rgbに適用
-        depth_rgb = cv2.addWeighted(depth_rgb, 1, blue_overlay, 0.5, 0)
         depth_rgb = cv2.addWeighted(depth_rgb, 1, red_overlay, 0.5, 0)
+        depth_rgb = cv2.addWeighted(depth_rgb, 1, blue_overlay, 0.5, 0)
 
         # 中央領域と無視する領域をラインで表示
         cv2.line(

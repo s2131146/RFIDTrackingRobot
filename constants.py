@@ -26,12 +26,12 @@ class Position:
         return pos
 
     @classmethod
-    def convert_to_rotate(cls, pos):
+    def convert_to_rotate(cls, pos, stmp=True):
         if pos == cls.LEFT or pos == Commands.GO_LEFT:
             return Commands.ROTATE_LEFT
         if pos == cls.RIGHT or pos == Commands.GO_RIGHT:
             return Commands.ROTATE_RIGHT
-        if pos == cls.CENTER:
+        if pos == cls.CENTER and stmp:
             return Commands.STOP_TEMP
         return pos
 

@@ -129,7 +129,7 @@ class TargetProcessor:
 
         # インデックスを更新して次のターゲットを選択
         self.target_index = (self.target_index + 1) % len(self.detected_target_list)
-        self.current_target = self.detected_target_list[self.target_index]
+        self.current_target = self.select_closest_target(self.detected_target_list)
         self.target_clothing_color = self.current_target.clothing_color_rgb
 
         self.tracker.gui.update_status(
