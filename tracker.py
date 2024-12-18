@@ -1146,9 +1146,6 @@ class Tracker:
             if self.target_position != Commands.STOP_TEMP:
                 self.motor_power_l = max_power
                 self.motor_power_r = max_power
-                self.timer.remove("nf_right")
-                self.timer.remove("nf_left")
-                self.timer.remove("nf_center")
 
             self.stop_temp = False
             if self.target_position == Commands.GO_LEFT:
